@@ -1,4 +1,4 @@
-module github.com/huanxiaofu/cpr-embeddings
+module github.com/huanxiaofu/cpa-embeddings
 
 go 1.24
 

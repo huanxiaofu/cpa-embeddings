@@ -166,7 +166,7 @@ func abiDispatch(method string, raw []byte, run func(string, []byte) ([]byte, in
 		abiDisabled.Store(!local.Enabled)
 		return abiOK(map[string]any{
 			"schema_version": 10,
-			"metadata":       map[string]any{"Name": abiPluginID, "Version": "0.1.0", "Author": "huanxiaofu", "GitHubRepository": "https://github.com/huanxiaofu/cpr-embeddings", "Logo": "https://github.com/huanxiaofu.png", "ConfigFields": []any{}},
+			"metadata":       map[string]any{"Name": abiPluginID, "Version": "0.1.0", "Author": "huanxiaofu", "GitHubRepository": "https://github.com/huanxiaofu/cpa-embeddings", "Logo": "https://github.com/huanxiaofu.png", "ConfigFields": []any{}},
 			"capabilities": map[string]any{
 				"model_router": true, "executor": true, "executor_model_scope": "static",
 				"executor_input_formats": []string{abiFormat}, "executor_output_formats": []string{abiFormat},

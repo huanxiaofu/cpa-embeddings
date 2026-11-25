@@ -1,4 +1,4 @@
-# CPR Embeddings
+# CPA Embeddings
 
 让知识库和其他 OpenAI 兼容客户端用原有 CPA 客户端 Key 调用 `POST /v1/embeddings`。支持 Gemini 原生向量接口和 SiliconFlow OpenAI 兼容接口。用量由 **CLIProxyAPI 的执行链**登记；插件不保管下游 Key，也不直接改面板数据库。
 
