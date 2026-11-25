@@ -1,0 +1,50 @@
+# 放在已有 HTTPS server 块内，安装时将 CPA_UPSTREAM 替换为已有 CPA 内网地址；不是管理端口。
+location = /v1/embeddings {
+    client_max_body_size 2m;
+    client_body_buffer_size 2m;
+    # 先校验模型和请求种类，再转入宿主执行链，不能让未知模型回落到聊天。
+    rewrite_by_lua_block {
+        local function reject(status)
+            ngx.status = status
+            ngx.header.content_type = 'application/json'
+            ngx.say('{"error":{"message":"Invalid embedding request","type":"invalid_request_error"}}')
+            return ngx.exit(status)
+        end
+        if ngx.req.get_method() ~= 'POST' then return reject(405) end
+        if ngx.var.args and ngx.var.args ~= '' then return reject(400) end
+        ngx.req.read_body()
+        local raw = ngx.req.get_body_data()
+        if not raw then return reject(400) end
+        local cjson = require 'cjson.safe'
+        local body = cjson.decode(raw)
+        if type(body) ~= 'table' or (body.stream ~= nil and body.stream ~= false) then return reject(400) end
+        local models = { ['gemini-embedding-001']=true, ['gemini-embedding-2']=true, ['gemini-embedding-2-preview']=true, -- EXTRA_VERIFIED_MODELS
+        }
+        if not models[body.model] then return reject(400) end
+        -- 只转发向量协议字段；重编码消除重复的 model 字段在宿主和入口被不同解释的风险。
+        local allowed = {model=true,input=true,dimensions=true,encoding_format=true,user=true,stream=true}
+        for k in pairs(body) do if not allowed[k] then return reject(400) end end
+        local size = 0
+        if type(body.input) == 'string' then size = #body.input
+        elseif type(body.input) == 'table' then
+            if #body.input < 1 or #body.input > 32 then return reject(400) end
+            for k,v in pairs(body.input) do
+                if type(k) ~= 'number' or k < 1 or k > #body.input or type(v) ~= 'string' or #v == 0 then return reject(400) end
+                size = size + #v
+            end
+        else return reject(400) end
+        if size == 0 then return reject(400) end
+        if size > 262144 then return reject(413) end
+        ngx.req.set_body_data(cjson.encode(body))
+    }
+    proxy_pass http://CPA_UPSTREAM/v1/responses;
+    proxy_http_version 1.1;
+    proxy_set_header X-Cpr-Operation embeddings;
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Cookie "";
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_read_timeout 120s;
+}
