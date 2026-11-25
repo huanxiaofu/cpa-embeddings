@@ -2,3 +2,4 @@ dist/
 *.so
 .env*
 *.local.yaml
+.pi/

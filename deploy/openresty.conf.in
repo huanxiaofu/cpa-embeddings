@@ -18,11 +18,11 @@ location = /v1/embeddings {
         local cjson = require 'cjson.safe'
         local body = cjson.decode(raw)
         if type(body) ~= 'table' or (body.stream ~= nil and body.stream ~= false) then return reject(400) end
-        local models = { ['gemini-embedding-001']=true, ['gemini-embedding-2']=true, ['gemini-embedding-2-preview']=true, -- EXTRA_VERIFIED_MODELS
+        local models = { -- CPA_EMBED_MODELS
         }
         if not models[body.model] then return reject(400) end
         -- 只转发向量协议字段；重编码消除重复的 model 字段在宿主和入口被不同解释的风险。
-        local allowed = {model=true,input=true,dimensions=true,encoding_format=true,user=true,stream=true}
+        local allowed = {model=true,input=true,dimensions=true,encoding_format=true,user=true,stream=true,input_type=true}
         for k in pairs(body) do if not allowed[k] then return reject(400) end end
         local size = 0
         if type(body.input) == 'string' then size = #body.input

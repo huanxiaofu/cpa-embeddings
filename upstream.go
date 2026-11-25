@@ -27,6 +27,7 @@ type keyBinding struct {
 }
 type groupBinding struct {
 	keyBinding `yaml:",inline"`
+	Name       string       `yaml:"name"`
 	Base       string       `yaml:"base-url"`
 	Keys       []keyBinding `yaml:"keys"`
 	Models     []struct {
@@ -37,14 +38,95 @@ type groupBinding struct {
 
 const googleBase = "https://generativelanguage.googleapis.com"
 
-func liveBinding(raw []byte, model string) (keyBinding, error) {
+// geminiModelName 只接受 Gemini 向量族的单段型号名：拒绝路径分隔符、动作冒号、
+// 查询串、空白和非 ASCII 字符，避免拼出聊天动作或任意 Google URL 路径。
+func geminiModelName(model string) bool {
+	var tail string
+	switch {
+	case strings.HasPrefix(model, "gemini-embedding-"):
+		tail = model[len("gemini-embedding-"):]
+	case strings.HasPrefix(model, "text-embedding-"):
+		tail = model[len("text-embedding-"):]
+	default:
+		return false
+	}
+	if tail == "" || len(model) > 96 || strings.HasPrefix(tail, "-") || strings.HasSuffix(tail, "-") ||
+		strings.HasPrefix(tail, ".") || strings.HasSuffix(tail, ".") || strings.Contains(tail, "..") {
+		return false
+	}
+	for _, c := range tail {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// geminiConfig 读取 CPA 配置原文，路径可由 CPR_EMBED_CONFIG 覆盖。
+func geminiConfig() (string, []byte, error) {
+	f := os.Getenv("CPR_EMBED_CONFIG")
+	if f == "" {
+		f = "config.yaml"
+	}
+	raw, e := os.ReadFile(f)
+	if e != nil {
+		return f, nil, errors.New("cannot load CPA configuration")
+	}
+	return f, raw, nil
+}
+
+func parseGemini(raw []byte) ([]groupBinding, error) {
 	var cfg struct {
 		API struct {
 			Gemini []groupBinding `yaml:"gemini"`
 		} `yaml:"api-keys"`
 	}
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return keyBinding{}, errors.New("invalid CPA configuration")
+		return nil, errors.New("invalid CPA configuration")
+	}
+	return cfg.API.Gemini, nil
+}
+
+// geminiDeclared 判断型号是否在原生 googleBase 组里按 name 显式登记。
+// Native 不做别名转发，因此 alias 必须为空或与 name 相同。
+func geminiDeclared(raw []byte, model string) bool {
+	groups, err := parseGemini(raw)
+	if err != nil {
+		return false
+	}
+	for _, g := range groups {
+		if strings.TrimRight(g.Base, "/") != googleBase {
+			continue
+		}
+		for _, m := range g.Models {
+			if m.Name == model && (m.Alias == model || m.Alias == "") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validGeminiModel 供上层分派：型号形态合法，且已在 CPA 的 api-keys.gemini 中
+// 按 name 显式登记。这里只回答"是否路由到 Google 原生端点"，凭据可用性仍由
+// liveBinding 在真正调用上游时确定。
+func validGeminiModel(model string) bool {
+	if !geminiModelName(model) {
+		return false
+	}
+	_, raw, err := geminiConfig()
+	return err == nil && geminiDeclared(raw, model)
+}
+
+func liveBinding(raw []byte, model string) (keyBinding, error) {
+	if !geminiModelName(model) {
+		return keyBinding{}, errors.New("unsupported embedding model")
+	}
+	groups, e := parseGemini(raw)
+	if e != nil {
+		return keyBinding{}, e
 	}
 	var bk []keyBinding
 	blocked := func(b keyBinding) bool {
@@ -58,7 +140,7 @@ func liveBinding(raw []byte, model string) (keyBinding, error) {
 		}
 		return false
 	}
-	for _, g := range cfg.API.Gemini {
+	for _, g := range groups {
 		if blocked(g.keyBinding) || strings.TrimRight(g.Base, "/") != googleBase {
 			continue
 		}
@@ -88,18 +170,16 @@ func liveBinding(raw []byte, model string) (keyBinding, error) {
 	return bk[0], nil
 }
 func upstreamFor(model string) (func(string, []byte) ([]byte, int, error), error) {
-	switch model {
-	case "gemini-embedding-001", "gemini-embedding-2", "gemini-embedding-2-preview":
-	default:
+	// 型号必须形态合法且在 CPA 中原生登记，不再硬编码具体型号清单。
+	if !geminiModelName(model) {
 		return nil, errors.New("unsupported embedding model")
 	}
-	f := os.Getenv("CPR_EMBED_CONFIG")
-	if f == "" {
-		f = "config.yaml"
-	}
-	raw, e := os.ReadFile(f)
+	f, raw, e := geminiConfig()
 	if e != nil {
-		return nil, errors.New("cannot load CPA configuration")
+		return nil, e
+	}
+	if !geminiDeclared(raw, model) {
+		return nil, errors.New("unsupported embedding model")
 	}
 	binding, e := liveBinding(raw, model)
 	if e != nil {
@@ -140,6 +220,11 @@ func upstreamFor(model string) (func(string, []byte) ([]byte, int, error), error
 		switch action {
 		case "embedContent", "batchEmbedContents", "countTokens":
 		default:
+			return nil, 400, errors.New("unsupported operation")
+		}
+		// 型号名在进门前已校验为单段标识符，这里再挡一次，确保 URL 只可能拼出
+		// 白名单动作，不会变成聊天或其它 Google 路径。
+		if !geminiModelName(model) {
 			return nil, 400, errors.New("unsupported operation")
 		}
 		req, e := http.NewRequest(http.MethodPost, googleBase+"/v1beta/models/"+model+":"+action, bytes.NewReader(body))

@@ -22,8 +22,8 @@ func TestABIRoute(t *testing.T) {
 		{"gemini-embedding-001", abiFormat, []string{"embeddings", "chat"}, false, false},
 		{"gemini-embedding-001", abiFormat, []string{"embeddings"}, true, false},
 		{"gemini-embedding-001", "openai", []string{"embeddings"}, false, false},
-		{"models/gemini-embedding-001", abiFormat, []string{"embeddings"}, false, false},
-		{"gemini-embedding-2-other", abiFormat, []string{"embeddings"}, false, false},
+		{"models/gemini-embedding-001", abiFormat, []string{"embeddings"}, false, true},
+		{"gemini-embedding-2-other", abiFormat, []string{"embeddings"}, false, true},
 	} {
 		raw, _ := json.Marshal(map[string]any{"RequestedModel": tc.model, "SourceFormat": tc.format, "Stream": tc.stream, "Headers": map[string][]string{"x-cpr-operation": tc.values}})
 		env := abiDispatch("model.route", raw, nil)

@@ -12,6 +12,10 @@ import (
 
 const embMaxInput = 256 << 10
 
+// 维度上限只为挡住明显异常的值：各型号的默认维度和可调上限不同，
+// 实际长度按上游响应逐项校验，不写死某个型号的 3072。
+const embMaxDim = 8192
+
 type embPart struct {
 	Text string `json:"text"`
 }
@@ -80,9 +84,8 @@ func runEmbedding(model string, body []byte) ([]byte, int, error) {
 func embRun(model string, body []byte, resolve func(string) (embCall, error)) ([]byte, int, error) {
 	bad := errors.New("invalid embedding request")
 	invalid := errors.New("invalid embedding upstream response")
-	switch model {
-	case "gemini-embedding-001", "gemini-embedding-2", "gemini-embedding-2-preview":
-	default:
+	// 只接受 Gemini 向量族型号；是否在 CPA 中原生登记由解析器在调用前判定。
+	if !geminiModelName(model) {
 		return nil, 400, bad
 	}
 	// 允许 JSON 转义带来的膨胀，但在解析前也限制请求大小。
@@ -91,6 +94,9 @@ func embRun(model string, body []byte, resolve func(string) (embCall, error)) ([
 	}
 	var in map[string]json.RawMessage
 	if !utf8.Valid(body) || json.Unmarshal(body, &in) != nil {
+		return nil, 400, bad
+	}
+	if in["input_type"] != nil {
 		return nil, 400, bad
 	}
 	if b, ok := in["model"]; ok {
@@ -103,7 +109,7 @@ func embRun(model string, body []byte, resolve func(string) (embCall, error)) ([
 		return nil, 400, bad
 	}
 	dim := 0
-	if b, ok := in["dimensions"]; ok && (json.Unmarshal(b, &dim) != nil || dim < 1 || dim > 3072) {
+	if b, ok := in["dimensions"]; ok && (json.Unmarshal(b, &dim) != nil || dim < 1 || dim > embMaxDim) {
 		return nil, 400, bad
 	}
 	format := "float"
@@ -142,6 +148,9 @@ func embRun(model string, body []byte, resolve func(string) (embCall, error)) ([
 		}
 		reqs[i] = embRequest{"models/" + model, embContent{[]embPart{{s}}}, dim}
 	}
+	if resolve == nil {
+		return nil, 502, errors.New("embedding upstream unavailable")
+	}
 	call, err := resolve(model)
 	if err != nil || call == nil {
 		return nil, 502, errors.New("embedding upstream unavailable")
@@ -170,9 +179,6 @@ func embRun(model string, body []byte, resolve func(string) (embCall, error)) ([
 		return nil, 502, invalid
 	}
 	expected := dim
-	if expected == 0 {
-		expected = 3072
-	}
 	items := make([]embItem, len(vs))
 	counts := make([]int, len(vs))
 	total, ok := embCount(rep.Usage.Count)
@@ -180,6 +186,13 @@ func embRun(model string, body []byte, resolve func(string) (embCall, error)) ([
 		return nil, 502, invalid
 	}
 	for i, v := range vs {
+		// 每项必须非空、等长、不超过硬上限；客户端指定 dimensions 时必须与响应一致。
+		if len(v.Values) == 0 || len(v.Values) > embMaxDim {
+			return nil, 502, invalid
+		}
+		if expected == 0 {
+			expected = len(v.Values)
+		}
 		if len(v.Values) != expected {
 			return nil, 502, invalid
 		}

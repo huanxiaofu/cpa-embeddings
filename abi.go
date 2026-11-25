@@ -53,7 +53,7 @@ const abiFormat = "openai-response"
 
 var abiDisabled atomic.Bool
 
-func main() {}
+func main() { edgeCLI() }
 
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
@@ -120,12 +120,9 @@ func (r abiIngress) accepts(model string) bool {
 	if abiDisabled.Load() || r.Stream || r.SourceFormat != abiFormat {
 		return false
 	}
-	switch model {
-	case "gemini-embedding-001", "gemini-embedding-2", "gemini-embedding-2-preview":
-	default:
-		if !compatModel(model) {
-			return false
-		}
+	// 标记由精确入口设置。旧边缘清单中的型号即使已撤销，也由执行器拒绝，不能回落聊天。
+	if model == "" {
+		return false
 	}
 	// 标记必须唯一；拒绝重复字段，不能因 map 遍历顺序改变路由。
 	found := false
@@ -166,7 +163,7 @@ func abiDispatch(method string, raw []byte, run func(string, []byte) ([]byte, in
 		abiDisabled.Store(!local.Enabled)
 		return abiOK(map[string]any{
 			"schema_version": 10,
-			"metadata":       map[string]any{"Name": abiPluginID, "Version": "0.1.0", "Author": "huanxiaofu", "GitHubRepository": "https://github.com/huanxiaofu/cpa-embeddings", "Logo": "https://github.com/huanxiaofu.png", "ConfigFields": []any{}},
+			"metadata":       map[string]any{"Name": abiPluginID, "Version": "0.2.0", "Author": "huanxiaofu", "GitHubRepository": "https://github.com/huanxiaofu/cpa-embeddings", "Logo": "https://github.com/huanxiaofu.png", "ConfigFields": []any{}},
 			"capabilities": map[string]any{
 				"model_router": true, "executor": true, "executor_model_scope": "static",
 				"executor_input_formats": []string{abiFormat}, "executor_output_formats": []string{abiFormat},

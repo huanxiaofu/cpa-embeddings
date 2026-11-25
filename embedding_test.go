@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -68,11 +70,91 @@ func TestEmbeddingAdapter(t *testing.T) {
 		})
 	}
 }
+
+// 不同型号的默认维度和可调上限不同：宽度只按响应逐项校验，不写死 3072。
+func TestEmbeddingWidthRules(t *testing.T) {
+	const model = "text-embedding-004"
+	vec := func(n int) string {
+		s := make([]string, n)
+		for i := range s {
+			s[i] = "0.5"
+		}
+		return "[" + strings.Join(s, ",") + "]"
+	}
+	for _, tc := range []struct {
+		name, dims, input, response string
+		wantStatus, wantTotal       int
+	}{
+		{"默认维度由响应决定", "", `"a"`, `{"embedding":{"values":` + vec(1024) + `},"usageMetadata":{"promptTokenCount":1}}`, 200, 1},
+		{"维度与请求一致", `,"dimensions":2`, `"a"`, `{"embedding":{"values":` + vec(2) + `},"usageMetadata":{"promptTokenCount":1}}`, 200, 1},
+		{"维度与请求不符", `,"dimensions":3`, `"a"`, `{"embedding":{"values":` + vec(2) + `},"usageMetadata":{"promptTokenCount":1}}`, 502, 0},
+		{"空向量", "", `"a"`, `{"embedding":{"values":[]},"usageMetadata":{"promptTokenCount":1}}`, 502, 0},
+		{"批量长度不一致", "", `["a","b"]`, `{"embeddings":[{"values":` + vec(2) + `},{"values":` + vec(3) + `}],"usageMetadata":{"promptTokenCount":5}}`, 502, 0},
+		{"响应超出上限", "", `"a"`, `{"embedding":{"values":` + vec(embMaxDim+1) + `},"usageMetadata":{"promptTokenCount":1}}`, 502, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			call := func(action string, p []byte) ([]byte, int, error) {
+				got = string(p)
+				return []byte(tc.response), 200, nil
+			}
+			b, s, err := embRun(model, []byte(`{"input":`+tc.input+tc.dims+`}`), func(m string) (embCall, error) {
+				if m != model {
+					t.Fatal(m)
+				}
+				return call, nil
+			})
+			// 请求里没有 dimensions 时不得凭空补一个默认值。
+			if strings.Contains(got, "outputDimensionality") != strings.Contains(tc.dims, "dimensions") {
+				t.Fatal(got)
+			}
+			if s != tc.wantStatus || (err == nil) != (s == 200) {
+				t.Fatal(s, err)
+			}
+			if s != 200 {
+				return
+			}
+			var r struct {
+				Usage map[string]int
+				Data  []struct {
+					Embedding []float32
+				}
+			}
+			if json.Unmarshal(b, &r) != nil || r.Usage["total_tokens"] != tc.wantTotal || len(r.Data) != 1 || len(r.Data[0].Embedding) == 0 {
+				t.Fatal(string(b))
+			}
+			want := 1024
+			if tc.dims != "" {
+				want, _ = strconv.Atoi(strings.TrimPrefix(tc.dims, `,"dimensions":`))
+			}
+			if len(r.Data[0].Embedding) != want {
+				t.Fatal(len(r.Data[0].Embedding), want)
+			}
+		})
+	}
+}
+
 func TestEmbeddingRejectsInput(t *testing.T) {
-	for _, body := range []string{`{}`, `{"input":[]}`, `{"input":[null]}`, `{"input":"a","dimensions":3073}`, `{"input":"a","model":"other"}`, `{"input":"a","stream":true}`, `{"input":"a","encoding_format":null}`} {
-		_, s, err := embRun("gemini-embedding-001", []byte(body), nil)
+	for _, tc := range []struct{ model, body string }{
+		{"gemini-embedding-001", `{}`},
+		{"gemini-embedding-001", `{"input":[]}`},
+		{"gemini-embedding-001", `{"input":[null]}`},
+		{"gemini-embedding-001", `{"input":"a","dimensions":0}`},
+		{"gemini-embedding-001", `{"input":"a","dimensions":` + strconv.Itoa(embMaxDim+1) + `}`},
+		{"gemini-embedding-001", `{"input":"a","dimensions":-1}`},
+		{"gemini-embedding-001", `{"input":"a","model":"other"}`},
+		{"gemini-embedding-001", `{"input":"a","stream":true}`},
+		{"gemini-embedding-001", `{"input":"a","encoding_format":null}`},
+		// 只能走向量族型号：聊天型号、带路径或动作冒号的名字一律不接纳。
+		{"gemini-1.5-flash", `{"input":"a"}`},
+		{"models/gemini-embedding-001", `{"input":"a"}`},
+		{"gemini-embedding-001:embedContent", `{"input":"a"}`},
+		{"gemini-embedding-001/../chat", `{"input":"a"}`},
+		{"", `{"input":"a"}`},
+	} {
+		_, s, err := embRun(tc.model, []byte(tc.body), nil)
 		if s != 400 || err == nil {
-			t.Fatal(body, s)
+			t.Fatal(tc.model, tc.body, s)
 		}
 	}
 }
