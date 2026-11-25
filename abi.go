@@ -163,12 +163,14 @@ func abiDispatch(method string, raw []byte, run func(string, []byte) ([]byte, in
 		abiDisabled.Store(!local.Enabled)
 		return abiOK(map[string]any{
 			"schema_version": 10,
-			"metadata":       map[string]any{"Name": abiPluginID, "Version": "0.2.0", "Author": "huanxiaofu", "GitHubRepository": "https://github.com/huanxiaofu/cpa-embeddings", "Logo": "https://github.com/huanxiaofu.png", "ConfigFields": []any{}},
+			"metadata":       map[string]any{"Name": abiPluginID, "Version": "0.3.0", "Author": "huanxiaofu", "GitHubRepository": "https://github.com/huanxiaofu/cpa-embeddings", "Logo": "https://github.com/huanxiaofu.png", "ConfigFields": []any{}},
 			"capabilities": map[string]any{
-				"model_router": true, "executor": true, "executor_model_scope": "static",
+				"management_api": true, "model_router": true, "executor": true, "executor_model_scope": "static",
 				"executor_input_formats": []string{abiFormat}, "executor_output_formats": []string{abiFormat},
 			},
 		})
+	case "management.register", "management.handle":
+		return managementRPC(method, raw)
 	case "plugin.quiesce", "plugin.shutdown":
 		return abiOK(struct{}{})
 	case "executor.identifier":

@@ -25,15 +25,68 @@ type keyBinding struct {
 	Exclude  []string          `yaml:"excluded-models"`
 	Headers  map[string]string `yaml:"headers"`
 }
+
+// modelBinding 是 CPA 组内登记的单个模型条目。向量识别只看真实 name 与显式
+// output-modalities；alias 仅是客户端寻址名，不能反向证明模型属于向量族。
+type modelBinding struct {
+	Name     string   `yaml:"name"`
+	Alias    string   `yaml:"alias"`
+	Modality []string `yaml:"output-modalities"`
+}
+
+// UnmarshalYAML 同时接受 output-modalities 与 output_modalities，并容忍单值写法，
+// 避免一处拼写差异让整份 CPA 配置解析失败。
+func (m *modelBinding) UnmarshalYAML(node *yaml.Node) error {
+	var raw struct {
+		Name  string    `yaml:"name"`
+		Alias string    `yaml:"alias"`
+		Kebab yaml.Node `yaml:"output-modalities"`
+		Snake yaml.Node `yaml:"output_modalities"`
+	}
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	kebab, err := modalityList(&raw.Kebab)
+	if err != nil {
+		return err
+	}
+	snake, err := modalityList(&raw.Snake)
+	if err != nil {
+		return err
+	}
+	m.Name, m.Alias = raw.Name, raw.Alias
+	m.Modality = append(kebab, snake...)
+	return nil
+}
+
+// modalityList 把标量或序列形态的输出模态统一成切片；空值与 null 视为未声明。
+func modalityList(node *yaml.Node) ([]string, error) {
+	if node == nil || node.Kind == 0 || node.Tag == "!!null" {
+		return nil, nil
+	}
+	if node.Kind == yaml.ScalarNode {
+		var s string
+		if err := node.Decode(&s); err != nil {
+			return nil, err
+		}
+		if s = strings.TrimSpace(s); s == "" {
+			return nil, nil
+		}
+		return []string{s}, nil
+	}
+	var list []string
+	if err := node.Decode(&list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
 type groupBinding struct {
 	keyBinding `yaml:",inline"`
-	Name       string       `yaml:"name"`
-	Base       string       `yaml:"base-url"`
-	Keys       []keyBinding `yaml:"keys"`
-	Models     []struct {
-		Name  string `yaml:"name"`
-		Alias string `yaml:"alias"`
-	} `yaml:"models"`
+	Name       string         `yaml:"name"`
+	Base       string         `yaml:"base-url"`
+	Keys       []keyBinding   `yaml:"keys"`
+	Models     []modelBinding `yaml:"models"`
 }
 
 const googleBase = "https://generativelanguage.googleapis.com"
@@ -128,6 +181,9 @@ func liveBinding(raw []byte, model string) (keyBinding, error) {
 	if e != nil {
 		return keyBinding{}, e
 	}
+	return geminiBinding(groups, model)
+}
+func geminiBinding(groups []groupBinding, model string) (keyBinding, error) {
 	var bk []keyBinding
 	blocked := func(b keyBinding) bool {
 		if b.Disabled || b.Weight != nil && *b.Weight <= 0 || b.Prefix != "" || len(b.Headers) > 0 {

@@ -59,8 +59,16 @@ func TestCompatBindingAllowed(t *testing.T) {
 			"[{name: bge-m3-private, alias: private-embed}]", "[{api-key: unit-private, weight: 1}]", "private-embed",
 			"https://embeddings.internal.test/compat/v1", "bge-m3-private", "unit-private"},
 		{"组级单一凭据", "groupkey-embeddings", "https://embeddings.internal.test/v1", "      api-key: unit-group\n",
-			"[{name: group-embed}]", "[]", "group-embed",
-			"https://embeddings.internal.test/v1", "group-embed", "unit-group"},
+			"[{name: BAAI/bge-large-zh-v1.5}]", "[]", "BAAI/bge-large-zh-v1.5",
+			"https://embeddings.internal.test/v1", "BAAI/bge-large-zh-v1.5", "unit-group"},
+		// 后缀不再授权整组：混合组里只有被逐个识别的向量模型能绑定。
+		{"无后缀混合组按模型识别", "mixed-upstream", "https://api.example.test/v1", "",
+			"[{name: gpt-4o}, {name: text-embedding-3-small, alias: kb-embed}]", "[{api-key: unit-mixed}]", "kb-embed",
+			"https://api.example.test/v1", "text-embedding-3-small", "unit-mixed"},
+		// 显式输出模态可以让非标准型号名参与向量路由。
+		{"显式 output-modalities 声明向量", "vendor-upstream", "https://api.example.test/v1", "",
+			"[{name: vendor-vector-v1, alias: vendor-vec, output-modalities: [embedding]}]", "[{api-key: unit-vendor}]", "vendor-vec",
+			"https://api.example.test/v1", "vendor-vector-v1", "unit-vendor"},
 	} {
 		compatConfig(t, compatCfg(compatGroupYAML(tc.group, tc.base, tc.extra, tc.models, tc.keys)))
 		target, err := compatBinding(tc.model)
@@ -79,9 +87,13 @@ func TestCompatBindingRejected(t *testing.T) {
 	const models = "[{name: BAAI/bge-m3, alias: BAAI/bge-m3}]"
 	const keys = "[{api-key: unit-silicon, weight: 1}]"
 	for _, tc := range []struct{ label, cfg string }{
-		{"组名缺少 -embeddings 后缀", compatCfg(compatGroupYAML("siliconflow", base, "", models, keys))},
-		{"组名只有后缀", compatCfg(compatGroupYAML("-embeddings", base, "", models, keys))},
-		{"模型只在普通聊天组", compatCfg(compatGroupYAML("chat", base, "", models, keys), compatGroupYAML("chat-embeddings", base, "", "[{name: other-embed}]", keys))},
+		// 组名不再授权整组：聊天、重排、图像生成模型逐个被拒。
+		{"组名带向量后缀也拒绝聊天模型", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", "[{name: gpt-4o, alias: gpt-4o}]", keys))},
+		{"alias 伪造向量名", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", "[{name: gpt-4o, alias: text-embedding-3-small}]", keys))},
+		{"重排模型", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", "[{name: bge-reranker-v2-m3, alias: BAAI/bge-m3}]", keys))},
+		{"图像生成模型", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", "[{name: dall-e-3, alias: BAAI/bge-m3}]", keys))},
+		{"显式非向量模态", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", "[{name: BAAI/bge-m3, alias: BAAI/bge-m3, output-modalities: [chat]}]", keys))},
+		{"显式非法协议映射", "plugins:\n  configs:\n    cpr-gemini-embeddings:\n      upstream-protocols:\n        siliconflow-embeddings: grpc\n" + compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", models, keys))},
 		{"别名不一致", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", "[{name: BAAI/bge-m3, alias: other-alias}]", keys))},
 		{"组停用", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "      disabled: true\n", models, keys))},
 		{"组权重为 0", compatCfg(compatGroupYAML("siliconflow-embeddings", base, "      weight: 0\n", models, keys))},
@@ -115,6 +127,13 @@ func TestCompatBindingRejected(t *testing.T) {
 			t.Errorf("%s: 被错误接受", tc.label)
 		}
 	}
+	// 人工 deny 规则按“渠道组名 + 真实模型名”生效。
+	deny := "plugins:\n  configs:\n    cpr-gemini-embeddings:\n      model-overrides:\n        siliconflow-embeddings:\n          BAAI/bge-m3: deny\n" +
+		compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", models, keys))
+	compatConfig(t, deny)
+	if compatAllowed(compatTestModel) {
+		t.Error("人工 deny 规则未生效")
+	}
 	// 全局代理策略与多文档配置同样拒绝，不退回直连。
 	compatConfig(t, "proxy-url: http://127.0.0.1:9\n"+compatCfg(compatGroupYAML("siliconflow-embeddings", base, "", models, keys)))
 	if compatAllowed(compatTestModel) {
@@ -131,7 +150,7 @@ func TestCompatUnavailable(t *testing.T) {
 	for _, cfg := range []string{
 		compatCfg(compatGroupYAML("siliconflow-embeddings", "https://api.siliconflow.cn/v1", "      disabled: true\n", "[{name: BAAI/bge-m3, alias: BAAI/bge-m3}]", "[{api-key: unit-silicon, weight: 1}]")),
 		compatCfg(compatGroupYAML("siliconflow-embeddings", "https://api.siliconflow.cn/v1", "", "[{name: BAAI/bge-m3, alias: BAAI/bge-m3}]", "[{api-key: unit-silicon, disabled: true}]")),
-		compatCfg(compatGroupYAML("chat-upstream", "https://api.siliconflow.cn/v1", "", "[{name: BAAI/bge-m3, alias: BAAI/bge-m3}]", "[{api-key: unit-silicon, weight: 1}]")),
+		compatCfg(compatGroupYAML("chat-upstream", "https://api.siliconflow.cn/v1", "", "[{name: gpt-4o, alias: gpt-4o}]", "[{api-key: unit-silicon, weight: 1}]")),
 	} {
 		compatConfig(t, cfg)
 		if compatAllowed(compatTestModel) || compatModel(compatTestModel) {

@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<!--
+  向量模型开关 · CPA Embeddings 管理面（单文件，无构建、无外部资源）
+  接口合同：
+    GET  /embedding-models/api  -> {models:[{channel,name,alias,automatic,mode,enabled,protocol}], revision}
+    POST /embedding-models/api  {channel,name,mode,revision} -> 新快照；版本不一致返回 409
+  在 CPA 原生插件页（/v0/resource/plugins/.../panel）打开时改用
+    /v0/management/cpa-embeddings/models
+  约束：管理密钥只在内存；不写 storage/cookie/URL；请求 credentials:omit、redirect:error；
+        不使用 innerHTML，模型名等一律按文本渲染；修改必须逐条保存。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">
+<title>向量模型开关 · CPA Embeddings 管理面</title>
+<style>
+:root{
+  --ink:#080d0b;
+  --ink-2:#0b1210;
+  --panel:#0f1916;
+  --panel-2:#132019;
+  --line:rgba(170,214,186,.13);
+  --line-2:rgba(170,214,186,.22);
+  --text:#e6efe8;
+  --muted:#8ea69c;
+  --dim:#708880;
+  --signal:#c8f25a;
+  --signal-ink:#0d150a;
+  --amber:#f2b45c;
+  --danger:#ff7d6b;
+  --ok:#6fe3b4;
+  --body:"Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --display:"Noto Serif CJK SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"Noto Sans Mono","Noto Sans Mono CJK SC",ui-monospace,"SFMono-Regular",monospace;
+  --r:3px;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{background:var(--ink)}
+body{
+  margin:0;
+  min-height:100vh;
+  color:var(--text);
+  font-family:var(--body);
+  font-size:14px;
+  line-height:1.65;
+  letter-spacing:.01em;
+  background:
+    radial-gradient(1100px 520px at 8% -12%,rgba(200,242,90,.11),transparent 62%),
+    radial-gradient(900px 460px at 102% -4%,rgba(242,180,92,.07),transparent 66%),
+    radial-gradient(800px 700px at 50% 120%,rgba(111,227,180,.05),transparent 70%),
+    var(--ink);
+  background-attachment:fixed;
+}
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  background-image:
+    linear-gradient(rgba(160,205,180,.055) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(160,205,180,.055) 1px,transparent 1px);
+  background-size:72px 72px;
+  -webkit-mask-image:radial-gradient(900px 700px at 30% 0%,#000 10%,transparent 78%);
+  mask-image:radial-gradient(900px 700px at 30% 0%,#000 10%,transparent 78%);
+  z-index:0;
+}
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  background:linear-gradient(180deg,rgba(200,242,90,.06),transparent 18%,transparent 84%,rgba(0,0,0,.35));
+  z-index:0;
+}
+.shell{position:relative;z-index:1;max-width:1300px;margin:0 auto;padding:34px 30px 96px}
+
+/* ---------- 页眉 ---------- */
+.masthead{display:flex;flex-wrap:wrap;gap:26px;align-items:flex-start;justify-content:space-between;padding-bottom:26px;border-bottom:1px solid var(--line)}
+.brand{display:flex;gap:20px;align-items:flex-start;min-width:0}
+.mark{
+  flex:0 0 auto;width:46px;height:46px;margin-top:6px;display:grid;place-items:center;
+  border:1px solid var(--line-2);color:var(--signal);
+  font-family:var(--mono);font-size:19px;line-height:1;
+  background:linear-gradient(160deg,rgba(200,242,90,.14),transparent 70%);
+  box-shadow:inset 0 0 24px rgba(200,242,90,.08);
+}
+.eyebrow{margin:0 0 8px;font-family:var(--mono);font-size:10.5px;letter-spacing:.3em;text-transform:uppercase;color:var(--signal)}
+h1{margin:0;font-family:var(--display);font-weight:600;font-size:clamp(28px,3.4vw,42px);line-height:1.15;letter-spacing:.01em}
+.lede{margin:10px 0 0;max-width:62ch;color:var(--muted);font-size:13.5px}
+.conn{display:flex;flex-direction:column;align-items:flex-end;gap:10px;min-width:220px}
+.conn-line{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px rgba(93,115,107,.14)}
+.dot.live{background:var(--signal);box-shadow:0 0 0 3px rgba(200,242,90,.16),0 0 14px rgba(200,242,90,.5)}
+.dot.busy{background:var(--amber);box-shadow:0 0 0 3px rgba(242,180,92,.18);animation:blink 1s ease-in-out infinite}
+.dot.bad{background:var(--danger);box-shadow:0 0 0 3px rgba(255,125,107,.18)}
+@keyframes blink{50%{opacity:.25}}
+.conn-actions{display:flex;gap:8px}
+
+/* ---------- 通用控件 ---------- */
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:1px solid var(--line-2);border-radius:var(--r);padding:8px 14px;transition:background .16s,border-color .16s,color .16s,transform .12s}
+button:hover:not(:disabled){border-color:rgba(200,242,90,.5);background:rgba(200,242,90,.06)}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{cursor:not-allowed;opacity:.42}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+button.primary{background:var(--signal);border-color:var(--signal);color:var(--signal-ink);font-weight:600}
+button.primary:hover:not(:disabled){background:#d8ff7a;border-color:#d8ff7a}
+button.ghost{border-color:var(--line);color:var(--muted);font-size:12.5px;padding:6px 11px}
+button.ghost:hover:not(:disabled){color:var(--text)}
+button.mini{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:6px 10px}
+input,select{font:inherit;color:var(--text);background:var(--ink-2);border:1px solid var(--line-2);border-radius:var(--r);padding:9px 11px;width:100%;transition:border-color .16s,background .16s}
+input::placeholder{color:var(--dim)}
+input:hover:not(:disabled),select:hover:not(:disabled){border-color:rgba(200,242,90,.34)}
+input:disabled,select:disabled{opacity:.5;cursor:not-allowed}
+label{display:block}
+.field-label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+
+/* ---------- 密钥门 ---------- */
+.gate{position:relative;margin-top:34px;border:1px solid var(--line);background:linear-gradient(150deg,var(--panel),var(--ink-2) 70%);padding:38px 38px 34px;display:grid;grid-template-columns:1.05fr .95fr;gap:44px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+.gate::before,.gate::after{content:"";position:absolute;width:14px;height:14px;pointer-events:none}
+.gate::before{top:-1px;left:-1px;border-top:2px solid var(--signal);border-left:2px solid var(--signal)}
+.gate::after{bottom:-1px;right:-1px;border-bottom:2px solid var(--signal);border-right:2px solid var(--signal)}
+.gate h2{margin:0 0 10px;font-family:var(--display);font-weight:600;font-size:23px}
+.gate p{margin:0;color:var(--muted);font-size:13.5px}
+.steps{margin:24px 0 0;padding:0;list-style:none;display:grid;gap:13px;counter-reset:step}
+.steps li{display:grid;grid-template-columns:34px 1fr;gap:12px;align-items:baseline;color:var(--muted);font-size:13px}
+.steps li::before{counter-increment:step;content:"0" counter(step);font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--signal);padding-top:2px}
+.steps b{color:var(--text);font-weight:600}
+.gate-form{align-self:center;border-left:1px solid var(--line);padding-left:38px}
+.gate-form .field{margin-bottom:14px}
+.gate-note{display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:12px;color:var(--dim);line-height:1.6}
+.gate-note code{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.gate-note svg{flex:0 0 auto;margin-top:3px;color:var(--signal)}
+.form-error{margin:12px 0 0;min-height:1.2em;color:var(--danger);font-size:12.5px}
+.gate-form .primary{width:100%;margin-top:4px;padding:11px 16px;letter-spacing:.04em}
+
+/* ---------- 控制台 ---------- */
+.console{margin-top:30px;animation:rise .45s cubic-bezier(.2,.7,.2,1) both}
+.notice{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line-2);border-left:3px solid var(--amber);background:rgba(242,180,92,.06);padding:12px 15px;margin-bottom:16px;font-size:13px;animation:rise .24s ease both}
+.notice[data-kind="error"]{border-left-color:var(--danger);background:rgba(255,125,107,.07);color:#ffd9d3}
+.notice[data-kind="warn"]{border-left-color:var(--amber);background:rgba(242,180,92,.07);color:#fbe6c8}
+.notice[data-kind="ok"]{border-left-color:var(--ok);background:rgba(111,227,180,.07);color:#d4f7e8}
+.notice-icon{font-family:var(--mono);font-weight:700;color:var(--amber);line-height:1.5}
+.notice[data-kind="error"] .notice-icon{color:var(--danger)}
+.notice[data-kind="ok"] .notice-icon{color:var(--ok)}
+.notice-text{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.notice-actions{display:flex;gap:8px;flex:0 0 auto}
+
+.toolbar{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:flex-end;border:1px solid var(--line);background:rgba(15,25,22,.9);backdrop-filter:blur(12px);padding:16px 18px;position:sticky;top:0;z-index:6}
+.toolbar .grow{flex:1 1 240px;min-width:190px}
+.toolbar .tight{flex:0 0 auto}
+.toolbar select,.toolbar input{padding:8px 10px;font-size:13px}
+.search-wrap{position:relative}
+.search-wrap input{padding-left:32px}
+.search-wrap svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--dim);pointer-events:none}
+.switch{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--muted);cursor:pointer;user-select:none;padding-bottom:7px}
+.switch-box{position:relative;display:inline-flex;flex:0 0 auto}
+.switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.switch .track{width:34px;height:18px;border:1px solid var(--line-2);background:var(--ink-2);border-radius:99px;position:relative;transition:background .18s,border-color .18s;flex:0 0 auto;pointer-events:none}
+.switch .track::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dim);transition:transform .18s,background .18s}
+.switch input:checked+.track{background:rgba(200,242,90,.18);border-color:rgba(200,242,90,.55)}
+.switch input:checked+.track::after{transform:translateX(16px);background:var(--signal)}
+.switch input:focus-visible+.track{outline:2px solid var(--signal);outline-offset:2px}
+
+.readouts{display:flex;flex-wrap:wrap;gap:22px;margin-left:auto;padding-bottom:2px}
+.readout{display:flex;flex-direction:column;gap:1px;min-width:52px}
+.readout span{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}
+.readout b{font-family:var(--mono);font-size:18px;font-weight:500;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums}
+.readout b.hot{color:var(--signal)}
+.readout b.warn{color:var(--amber)}
+
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;margin:16px 2px 10px;color:var(--dim);font-size:12px}
+.legend code{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+/* ---------- 表格 ---------- */
+.board{border:1px solid var(--line);background:linear-gradient(180deg,rgba(19,32,25,.72),rgba(11,18,16,.72));position:relative;overflow:hidden}
+.board[aria-busy="true"]::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--signal),transparent);animation:sweep 1.15s linear infinite;z-index:3}
+@keyframes sweep{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.row-head,.row{display:grid;grid-template-columns:minmax(190px,2.1fr) minmax(96px,.95fr) 82px 92px 96px minmax(176px,1.5fr) 118px;gap:14px;align-items:center;padding:0 18px}
+.row-head{min-height:42px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);background:rgba(8,13,11,.4)}
+.row{min-height:62px;border-bottom:1px solid rgba(170,214,186,.07);position:relative;transition:background .16s}
+.row:last-child{border-bottom:0}
+.row:hover{background:rgba(200,242,90,.035)}
+.row::after{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:transparent;transition:background .18s}
+.row[data-dirty="true"]::after{background:var(--amber)}
+.row[data-saving="true"]::after{background:var(--signal);animation:blink .9s ease-in-out infinite}
+.cell{min-width:0;overflow-wrap:anywhere}
+.cell.model{display:flex;align-items:baseline;gap:10px;min-width:0}
+.ord{font-family:var(--mono);font-size:10.5px;color:var(--dim);flex:0 0 auto;letter-spacing:.06em}
+.model-stack{min-width:0;display:flex;flex-direction:column;gap:1px}
+.model-name{font-family:var(--mono);font-size:13px;color:var(--text);letter-spacing:.01em}
+.model-alias{font-size:11.5px;color:var(--dim);font-family:var(--mono)}
+.chip{display:inline-block;max-width:100%;padding:2px 7px;border:1px solid var(--line-2);border-radius:2px;font-family:var(--mono);font-size:11px;color:var(--muted);background:rgba(170,214,186,.04);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.proto{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.04em}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);white-space:nowrap}
+.badge::before{content:"";width:5px;height:5px;border-radius:1px;background:var(--dim)}
+.badge.auto{color:var(--signal)}
+.badge.auto::before{background:var(--signal);box-shadow:0 0 8px rgba(200,242,90,.7)}
+.badge.unknown{color:var(--dim)}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:99px;font-size:11.5px;border:1px solid transparent;white-space:nowrap}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.on{color:var(--ok);background:rgba(111,227,180,.1);border-color:rgba(111,227,180,.26)}
+.pill.off{color:var(--dim);background:rgba(93,115,107,.1);border-color:rgba(93,115,107,.28)}
+.mode-cell{display:flex;flex-direction:column;gap:3px}
+.select-wrap{position:relative;display:block}
+.select-wrap select{appearance:none;-webkit-appearance:none;padding:7px 26px 7px 10px;font-size:12.5px;font-family:var(--mono);letter-spacing:.01em}
+.select-wrap::after{content:"";position:absolute;right:10px;top:50%;width:6px;height:6px;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:translateY(-70%) rotate(45deg);pointer-events:none}
+.preview{font-size:11px;color:var(--amber);font-family:var(--mono);min-height:1.3em}
+.actions{display:flex;flex-direction:column;align-items:stretch;gap:4px}
+.actions button{padding:6px 10px;font-family:var(--mono);font-size:11.5px;letter-spacing:.06em}
+.row-status{font-size:11px;line-height:1.35;color:var(--dim);min-height:1.1em}
+.row-status[data-kind="warn"]{color:var(--amber)}
+.row-status[data-kind="error"]{color:var(--danger)}
+.empty{padding:44px 22px;text-align:center;color:var(--muted);font-size:13px}
+.empty b{display:block;font-family:var(--display);font-size:17px;color:var(--text);font-weight:600;margin-bottom:6px}
+.foot{display:flex;flex-wrap:wrap;gap:8px 26px;margin-top:14px;padding:0 2px;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--dim)}
+.foot b{font-weight:400;color:var(--muted);overflow-wrap:anywhere}
+.fine{margin:22px 0 0;color:var(--dim);font-size:11.5px;line-height:1.75;max-width:88ch}
+.fine code{font-family:var(--mono);color:var(--muted)}
+
+.toast{position:fixed;right:26px;bottom:26px;z-index:30;max-width:min(400px,calc(100vw - 40px));padding:12px 16px;border:1px solid rgba(200,242,90,.4);border-left:3px solid var(--signal);background:rgba(13,21,17,.97);box-shadow:0 18px 46px rgba(0,0,0,.55);font-size:13px;animation:toastin .26s cubic-bezier(.2,.8,.2,1) both}
+.toast[data-kind="error"]{border-color:rgba(255,125,107,.45);border-left-color:var(--danger)}
+.toast[hidden]{display:none}
+@keyframes toastin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+.row[data-flash="true"]{animation:flash 1.1s ease both}
+@keyframes flash{0%{background:rgba(200,242,90,.16)}100%{background:transparent}}
+
+@media (max-width:1080px){
+  .gate{grid-template-columns:1fr;gap:26px;padding:30px 26px}
+  .gate-form{border-left:0;border-top:1px solid var(--line);padding-left:0;padding-top:24px}
+  .row-head{display:none}
+  .row{grid-template-columns:1fr 1fr;gap:10px 18px;padding:16px 18px;align-items:start}
+  .row .cell.model{grid-column:1/-1}
+  .row .cell[data-label]:not(.model)::before{content:attr(data-label);display:block;font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
+  .row .cell.proto{display:none}
+}
+@media (max-width:720px){
+  .shell{padding:22px 16px 80px}
+  .brand{gap:14px}
+  .mark{width:38px;height:38px;font-size:16px}
+  .conn{align-items:flex-start;min-width:0;flex-direction:row;flex-wrap:wrap;gap:12px}
+  .toolbar{padding:14px}
+  .readouts{gap:16px;margin-left:0;width:100%}
+  .row{grid-template-columns:1fr}
+  .toast{right:16px;left:16px;bottom:16px;max-width:none}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header class="masthead">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">◈</div>
+      <div>
+        <p class="eyebrow">CPA Embeddings · 管理面</p>
+        <h1>向量模型开关</h1>
+        <p class="lede">逐条决定哪些向量模型对外可用。自动识别只给出常见模型的建议，真正对外生效的是这里保存下来的结果。</p>
+      </div>
+    </div>
+    <div class="conn">
+      <div class="conn-line"><span class="dot" id="linkDot"></span><span id="linkText">未连接</span></div>
+      <div class="conn-actions">
+        <button type="button" class="ghost" id="logoutBtn" hidden>退出并清除密钥</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 密钥门 -->
+  <section class="gate" id="gate" aria-labelledby="gateTitle">
+    <div>
+      <h2 id="gateTitle">先连接你的 CPA 管理密钥</h2>
+      <p>面板只读写本插件的模型开关，不显示也不保存上游凭据。密钥仅在当前页面内存中使用。</p>
+      <ol class="steps">
+        <li><span><b>填写管理密钥</b>，用于向本机 CPA 管理接口证明管理员身份。</span></li>
+        <li><span><b>读取模型清单</b>，看清自动识别结果与最终可用状态。</span></li>
+        <li><span><b>逐条选择并保存</b>，改一条存一条，不会自动生效。</span></li>
+      </ol>
+    </div>
+    <form class="gate-form" id="gateForm" autocomplete="off" novalidate>
+      <label class="field">
+        <span class="field-label">CPA 管理密钥</span>
+        <input type="password" id="adminKey" name="adminKey" autocomplete="off" spellcheck="false" placeholder="粘贴管理员 Key" aria-describedby="keyNote">
+      </label>
+      <button type="submit" class="primary" id="connectBtn">连接并读取</button>
+      <p class="form-error" id="gateError" role="alert"></p>
+      <div class="gate-note" id="keyNote">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 7V5a4 4 0 0 1 8 0v2M3.5 7h9v6.5h-9z" stroke="currentColor" stroke-width="1.4"/></svg>
+        <span>密钥只进入请求头 <code>Authorization: Bearer …</code>，不写入浏览器存储、Cookie 或地址栏；关闭页面或点「退出」即从内存清除。</span>
+      </div>
+    </form>
+  </section>
+
+  <!-- 控制台 -->
+  <section class="console" id="console" hidden aria-label="模型开关控制台">
+    <div class="notice" id="notice" hidden role="status">
+      <span class="notice-icon" id="noticeIcon" aria-hidden="true">!</span>
+      <span class="notice-text" id="noticeText"></span>
+      <span class="notice-actions" id="noticeActions"></span>
+    </div>
+
+    <div class="toolbar">
+      <div class="tight" style="min-width:150px">
+        <label class="field-label" for="channelFilter">渠道</label>
+        <select id="channelFilter" aria-label="按渠道过滤"></select>
+      </div>
+      <div class="grow">
+        <label class="field-label" for="search">模型关键词</label>
+        <div class="search-wrap">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.4"/><path d="m10.6 10.6 3 3" stroke="currentColor" stroke-width="1.4"/></svg>
+          <input type="search" id="search" placeholder="按模型名或别名过滤" aria-label="按模型名或别名过滤">
+        </div>
+      </div>
+      <label class="switch" for="onlyOpen">
+        <span class="switch-box">
+          <input type="checkbox" id="onlyOpen">
+          <span class="track" aria-hidden="true"></span>
+        </span>
+        <span>只看已开放</span>
+      </label>
+      <button type="button" class="ghost" id="refreshBtn" disabled>重新读取</button>
+      <div class="readouts" aria-live="off">
+        <div class="readout"><span>模型</span><b id="sTotal">—</b></div>
+        <div class="readout"><span>自动识别</span><b id="sAuto">—</b></div>
+        <div class="readout"><span>对外可用</span><b id="sOpen">—</b></div>
+        <div class="readout"><span>待保存</span><b id="sDirty">—</b></div>
+      </div>
+    </div>
+
+    <p class="legend">
+      <span><code>自动</code> 跟随自动识别结果</span>
+      <span><code>开放</code> 强制对外可用</span>
+      <span><code>关闭</code> 强制不对外</span>
+      <span id="countText">尚未读取</span>
+    </p>
+
+    <div class="board" id="board" aria-busy="false" role="table" aria-label="向量模型清单">
+      <div role="rowgroup">
+        <div class="row-head" role="row">
+          <span role="columnheader">模型</span>
+          <span role="columnheader">渠道</span>
+          <span role="columnheader">协议</span>
+          <span role="columnheader">自动识别</span>
+          <span role="columnheader">最终可用</span>
+          <span role="columnheader">开放方式</span>
+          <span role="columnheader">操作</span>
+        </div>
+      </div>
+      <div id="rows" role="rowgroup" aria-label="模型行"></div>
+      <div class="empty" id="empty" role="status">
+        <b>尚未读取模型清单</b>
+        连接后这里会列出本机 CPA 中当前登记的全部向量模型，以及它们实际的开放状态。
+      </div>
+    </div>
+
+    <div class="foot">
+      <span>接口 <b id="endpoint">/embedding-models/api</b></span>
+      <span>版本 <b id="revision">—</b></span>
+      <span>读取于 <b id="loadedAt">—</b></span>
+      <span>密钥 <b id="keyState">未持有</b></span>
+    </div>
+    <p class="fine">
+      自动识别只代表平台认识这个常见模型，不等于已对外可用；最终是否可用以「最终可用」一列和保存后的服务端返回为准。
+      修改必须逐条点「保存」，提交时会带上当前版本号；若期间配置被他人改动，服务端会返回冲突，面板会重新读取而不是覆盖。
+      上游凭据、模型地址都不在这个面板里，请继续在 CPA 配置文件中维护。
+    </p>
+  </section>
+</div>
+
+<div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- 常量与接口地址 ---------- */
+  var API_DEFAULT = '/embedding-models/api';
+  var API_CPA = '/v0/management/cpa-embeddings/models';
+  var MODE_LABEL = { auto: '自动 · 按识别结果', allow: '开放 · 对外可用', deny: '关闭 · 不对外' };
+  var MODE_SHORT = { auto: '自动', allow: '开放', deny: '关闭' };
+  var PROTO_LABEL = { openai: 'OpenAI 兼容', gemini: 'Gemini 原生', cohere: 'Cohere v2' };
+  var MODE_VALUES = ['auto', 'allow', 'deny'];
+
+  function resolveApiUrl() {
+    // 在 CPA 原生插件页中打开时，使用同源的 CPA 管理路径；独立部署时用插件前缀。
+    try {
+      if (/^\/v0\/resource\/plugins\//.test(window.location.pathname)) return API_CPA;
+    } catch (e) { /* 忽略：极端环境下退回默认前缀 */ }
+    return API_DEFAULT;
+  }
+  var apiUrl = resolveApiUrl();
+
+  /* ---------- DOM ---------- */
+  var $ = function (id) { return document.getElementById(id); };
+  var dom = {
+    gate: $('gate'), gateForm: $('gateForm'), adminKey: $('adminKey'), gateError: $('gateError'),
+    connectBtn: $('connectBtn'), console: $('console'), linkDot: $('linkDot'), linkText: $('linkText'),
+    logoutBtn: $('logoutBtn'), notice: $('notice'), noticeIcon: $('noticeIcon'), noticeText: $('noticeText'),
+    noticeActions: $('noticeActions'), channelFilter: $('channelFilter'), search: $('search'),
+    onlyOpen: $('onlyOpen'), refreshBtn: $('refreshBtn'), sTotal: $('sTotal'), sAuto: $('sAuto'),
+    sOpen: $('sOpen'), sDirty: $('sDirty'), countText: $('countText'), board: $('board'),
+    rows: $('rows'), empty: $('empty'), endpoint: $('endpoint'), revision: $('revision'),
+    loadedAt: $('loadedAt'), keyState: $('keyState'), toast: $('toast')
+  };
+
+  /* ---------- 状态（密钥只在内存，从不落地） ---------- */
+  var state = {
+    key: null,
+    epoch: 0,
+    snapshot: null,
+    revision: null,
+    loadedAt: null,
+    loading: false,
+    loadToken: 0,
+    abort: null,
+    drafts: new Map(),
+    saving: new Set(),
+    postSeq: 0,
+    postTokens: new Map(),
+    notes: new Map(),
+    rowRefs: new Map(),
+    focusKey: null,
+    flashKey: null,
+    channel: 'all',
+    query: '',
+    onlyOpen: false,
+    toastTimer: 0
+  };
+
+  /* ---------- 小工具 ---------- */
+  function keyOf(model) { return model.channel + '\u0000' + model.name; }
+  function modeOptionLabel(mode, automatic) {
+    if (mode === 'auto') return automatic ? '自动 · 跟随识别' : '自动 · 未识别';
+    return MODE_LABEL[mode];
+  }
+  function effective(mode, automatic) {
+    if (mode === 'allow') return true;
+    if (mode === 'deny') return false;
+    return automatic === true;
+  }
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+  function fmtTime(date) {
+    try {
+      return date.toLocaleTimeString('zh-CN', { hour12: false });
+    } catch (e) {
+      return date.toISOString().slice(11, 19);
+    }
+  }
+  function showToast(text, kind) {
+    window.clearTimeout(state.toastTimer);
+    dom.toast.textContent = text;
+    dom.toast.dataset.kind = kind || 'ok';
+    dom.toast.hidden = false;
+    state.toastTimer = window.setTimeout(function () { dom.toast.hidden = true; }, 2800);
+  }
+
+  /* ---------- 提示条 ---------- */
+  function setNotice(kind, text, action) {
+    dom.noticeActions.replaceChildren();
+    if (!kind) { dom.notice.hidden = true; dom.noticeText.textContent = ''; return; }
+    dom.notice.hidden = false;
+    dom.notice.dataset.kind = kind;
+    dom.noticeIcon.textContent = kind === 'ok' ? '✓' : (kind === 'error' ? '×' : '!');
+    dom.noticeText.textContent = text;
+    if (action) {
+      var btn = el('button', 'ghost mini', action.label);
+      btn.type = 'button';
+      btn.addEventListener('click', action.onClick);
+      dom.noticeActions.appendChild(btn);
+    }
+    if (kind === 'ok' || kind === 'warn') {
+      var close = el('button', 'ghost mini', '知道了');
+      close.type = 'button';
+      close.addEventListener('click', function () { setNotice(null); });
+      dom.noticeActions.appendChild(close);
+    }
+  }
+
+  /* ---------- 数据校验 ---------- */
+  function normalizeSnapshot(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    if (!Array.isArray(raw.models) || typeof raw.revision !== 'string' || raw.revision === '') return null;
+    var models = [];
+    var seen = new Set();
+    for (var i = 0; i < raw.models.length; i++) {
+      var item = raw.models[i];
+      if (!item || typeof item !== 'object') return null;
+      if (typeof item.channel !== 'string' || item.channel === '') return null;
+      if (typeof item.name !== 'string' || item.name === '') return null;
+      if (typeof item.automatic !== 'boolean') return null;
+      if (typeof item.enabled !== 'boolean') return null;
+      if (typeof item.protocol !== 'string') return null;
+      if (MODE_VALUES.indexOf(item.mode) === -1) return null;
+      if (item.alias !== undefined && item.alias !== null && typeof item.alias !== 'string') return null;
+      var k = item.channel + '\u0000' + item.name;
+      if (seen.has(k)) return null;
+      seen.add(k);
+      models.push({
+        channel: item.channel,
+        name: item.name,
+        alias: item.alias || '',
+        automatic: item.automatic,
+        mode: item.mode,
+        enabled: item.enabled,
+        protocol: item.protocol
+      });
+    }
+    return { models: models, revision: raw.revision };
+  }
+
+  function applySnapshot(snap) {
+    state.snapshot = snap;
+    state.revision = snap.revision;
+    state.loadedAt = new Date();
+    var valid = new Set(snap.models.map(keyOf));
+    state.drafts.forEach(function (_v, k) { if (!valid.has(k)) state.drafts.delete(k); });
+    state.notes.forEach(function (_v, k) { if (!valid.has(k)) state.notes.delete(k); });
+    render();
+  }
+
+  /* ---------- 读取 ---------- */
+  function load(reason) {
+    if (!state.key) return Promise.resolve(false);
+    if (state.saving.size > 0) {
+      showToast('有正在保存的修改，完成后再重新读取。', 'error');
+      return Promise.resolve(false);
+    }
+    if (state.abort) { try { state.abort.abort(); } catch (e) { /* 已结束 */ } }
+    var epoch = state.epoch;
+    var token = ++state.loadToken;
+    var controller = new AbortController();
+    state.abort = controller;
+    state.loading = true;
+    dom.board.setAttribute('aria-busy', 'true');
+    renderConnection();
+    renderBusy();
+    refreshRowStates();
+
+    return fetch(apiUrl, {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + state.key, 'Accept': 'application/json' },
+      credentials: 'omit',
+      redirect: 'error',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal
+    }).then(function (res) {
+      // 任何被后续读取或退出取代的响应都不再落到界面里。
+      if (epoch !== state.epoch || token !== state.loadToken) return false;
+      if (res.status === 401 || res.status === 403) {
+        disconnect('管理密钥无效或已过期，请重新输入。');
+        return false;
+      }
+      if (!res.ok) {
+        failLoad('读取失败：服务返回 HTTP ' + res.status + '，清单没有更新。');
+        return false;
+      }
+      return res.text().then(function (text) {
+        if (epoch !== state.epoch || token !== state.loadToken) return false;
+        var raw = null;
+        try { raw = JSON.parse(text); } catch (e) { raw = null; }
+        var snap = normalizeSnapshot(raw);
+        if (!snap) {
+          failLoad('读取失败：服务返回的数据不是约定的模型清单格式，已保留上一次结果。');
+          return false;
+        }
+        applySnapshot(snap);
+        if (reason !== 'conflict' && reason !== 'quiet') {
+          if (dom.notice.dataset.kind === 'error') setNotice(null);
+          if (reason === 'connect') showToast('已读取 ' + snap.models.length + ' 个模型');
+        }
+        return true;
+      });
+    }).catch(function (err) {
+      if (epoch !== state.epoch || token !== state.loadToken) return false;
+      if (err && err.name === 'AbortError') return false;
+      failLoad('读取失败：无法连接到本机管理接口，请确认 CPA 正在运行且路径正确。');
+      return false;
+    }).then(function (ok) {
+      if (token !== state.loadToken) return ok;
+      state.loading = false;
+      state.abort = null;
+      dom.board.setAttribute('aria-busy', 'false');
+      renderConnection();
+      renderBusy();
+      refreshRowStates();
+      return ok;
+    });
+  }
+
+  function failLoad(text) {
+    setNotice('error', text, { label: '重试读取', onClick: function () { load('retry'); } });
+    renderBusy();
+  }
+
+  function refreshRowStates() {
+    state.rowRefs.forEach(function (_refs, k) { updateRow(k); });
+  }
+
+  /* ---------- 保存单条 ---------- */
+  function saveRow(model) {
+    var k = keyOf(model);
+    var draft = state.drafts.get(k);
+    if (!draft || draft === model.mode) return;
+    if (state.saving.has(k) || !state.key || !state.snapshot || state.loading) return;
+
+    var epoch = state.epoch;
+    // 每条模型各自一个提交序号：别的行保存不会吞掉这一行的回执，同一行重复点击也不会重复提交。
+    var token = ++state.postSeq;
+    state.postTokens.set(k, token);
+    var revision = state.revision;
+    state.saving.add(k);
+    state.notes.delete(k);
+    updateRow(k);
+
+    fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + state.key,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      credentials: 'omit',
+      redirect: 'error',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      body: JSON.stringify({ channel: model.channel, name: model.name, mode: draft, revision: revision })
+    }).then(function (res) {
+      if (epoch !== state.epoch || state.postTokens.get(k) !== token) return;
+      if (res.status === 401 || res.status === 403) {
+        disconnect('管理密钥无效或已过期，请重新输入。');
+        return;
+      }
+      if (res.status === 409) {
+        state.saving.delete(k);
+        state.postTokens.delete(k);
+        state.notes.set(k, { kind: 'warn', text: '配置已被他人修改，已重新读取' });
+        updateRow(k);
+        setNotice('warn', '保存冲突：这条模型在你操作期间被其他人修改。面板已重新读取最新清单，请核对后再保存，不会自动覆盖。');
+        load('conflict');
+        return;
+      }
+      if (!res.ok) {
+        state.saving.delete(k);
+        state.postTokens.delete(k);
+        state.notes.set(k, { kind: 'error', text: '保存失败（HTTP ' + res.status + '），未生效' });
+        updateRow(k);
+        setNotice('error', '保存失败：服务返回 HTTP ' + res.status + '。这条修改没有生效，草稿仍保留，可核对后重试。');
+        return;
+      }
+      return res.text().then(function (text) {
+        if (epoch !== state.epoch || state.postTokens.get(k) !== token) return;
+        var raw = null;
+        try { raw = JSON.parse(text); } catch (e) { raw = null; }
+        var snap = normalizeSnapshot(raw);
+        state.saving.delete(k);
+        state.postTokens.delete(k);
+        if (!snap) {
+          state.notes.set(k, { kind: 'error', text: '保存回执无法识别，请重新读取' });
+          updateRow(k);
+          setNotice('error', '保存已提交，但服务返回的快照无法识别。请重新读取后再确认这条状态。', {
+            label: '重新读取', onClick: function () { load('after-save'); }
+          });
+          return;
+        }
+        state.drafts.delete(k);
+        state.notes.delete(k);
+        state.flashKey = k;
+        state.focusKey = k;
+        if (dom.notice.dataset.kind === 'warn' || dom.notice.dataset.kind === 'error') setNotice(null);
+        applySnapshot(snap);
+        showToast('已保存「' + model.name + '」：' + MODE_SHORT[draft]);
+      });
+    }).catch(function (err) {
+      if (epoch !== state.epoch || state.postTokens.get(k) !== token) return;
+      state.saving.delete(k);
+      state.postTokens.delete(k);
+      state.notes.set(k, { kind: 'error', text: '网络错误，未确认是否生效' });
+      updateRow(k);
+      setNotice('error', '保存请求没有送达或连接中断，不能确认这条修改是否生效。请重新读取核对。', {
+        label: '重新读取', onClick: function () { load('after-save'); }
+      });
+    }).then(function () {
+      if (epoch !== state.epoch || state.postTokens.get(k) !== token) return;
+      state.saving.delete(k);
+      state.postTokens.delete(k);
+      updateRow(k);
+    });
+  }
+
+  /* ---------- 渲染 ---------- */
+  function render() {
+    var hasKey = !!state.key;
+    dom.gate.hidden = hasKey;
+    dom.console.hidden = !hasKey;
+    dom.logoutBtn.hidden = !hasKey;
+    dom.keyState.textContent = hasKey ? '仅本页内存' : '未持有';
+    dom.endpoint.textContent = apiUrl;
+    dom.revision.textContent = state.revision || '—';
+    dom.loadedAt.textContent = state.loadedAt ? fmtTime(state.loadedAt) : '—';
+    dom.refreshBtn.disabled = !hasKey;
+    renderConnection();
+    renderChannelOptions();
+    renderSummary();
+    renderTable();
+    renderBusy();
+  }
+
+  function renderConnection() {
+    var live = !!state.key && !!state.snapshot;
+    dom.linkDot.className = 'dot' + (state.loading ? ' busy' : (live ? ' live' : (state.key ? '' : '')));
+    if (!state.key) dom.linkText.textContent = '未连接';
+    else if (state.loading) dom.linkText.textContent = '读取中…';
+    else if (state.snapshot) dom.linkText.textContent = '已连接 · ' + state.snapshot.models.length + ' 个模型';
+    else dom.linkText.textContent = '已授权 · 尚未读取';
+  }
+
+  function renderBusy() {
+    dom.refreshBtn.textContent = state.loading ? '读取中…' : '重新读取';
+    var filters = !state.snapshot || state.loading;
+    dom.channelFilter.disabled = filters;
+    dom.search.disabled = filters;
+    dom.onlyOpen.disabled = filters;
+  }
+
+  function renderChannelOptions() {
+    var models = state.snapshot ? state.snapshot.models : [];
+    var channels = [];
+    var seen = new Set();
+    models.forEach(function (m) { if (!seen.has(m.channel)) { seen.add(m.channel); channels.push(m.channel); } });
+    channels.sort();
+    var frag = document.createDocumentFragment();
+    var all = el('option', null, '全部渠道');
+    all.value = 'all';
+    frag.appendChild(all);
+    channels.forEach(function (c) {
+      var opt = el('option', null, c);
+      opt.value = c;
+      frag.appendChild(opt);
+    });
+    dom.channelFilter.replaceChildren(frag);
+    if (state.channel !== 'all' && channels.indexOf(state.channel) === -1) state.channel = 'all';
+    dom.channelFilter.value = state.channel;
+  }
+
+  function filteredModels() {
+    var models = state.snapshot ? state.snapshot.models.slice() : [];
+    var q = state.query.trim().toLowerCase();
+    models = models.filter(function (m) {
+      if (state.channel !== 'all' && m.channel !== state.channel) return false;
+      if (state.onlyOpen && m.enabled !== true) return false;
+      if (!q) return true;
+      return (m.name + ' ' + (m.alias || '')).toLowerCase().indexOf(q) !== -1;
+    });
+    models.sort(function (a, b) {
+      if (a.channel !== b.channel) return a.channel < b.channel ? -1 : 1;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    });
+    return models;
+  }
+
+  function renderSummary() {
+    var models = state.snapshot ? state.snapshot.models : [];
+    var auto = models.filter(function (m) { return m.automatic; }).length;
+    var open = models.filter(function (m) { return m.enabled; }).length;
+    dom.sTotal.textContent = state.snapshot ? String(models.length) : '—';
+    dom.sAuto.textContent = state.snapshot ? String(auto) : '—';
+    dom.sOpen.textContent = state.snapshot ? String(open) : '—';
+    dom.sDirty.textContent = String(state.drafts.size);
+    dom.sDirty.className = state.drafts.size > 0 ? 'warn' : '';
+    dom.sAuto.className = state.snapshot ? 'hot' : '';
+    dom.countText.textContent = state.snapshot
+      ? '显示 ' + filteredModels().length + ' / ' + models.length + ' 条'
+      : '尚未读取';
+  }
+
+  function renderTable() {
+    state.rowRefs.clear();
+    dom.rows.replaceChildren();
+    if (!state.snapshot) {
+      dom.empty.hidden = false;
+      dom.empty.replaceChildren(
+        el('b', null, '尚未读取模型清单'),
+        document.createTextNode('连接后这里会列出本机 CPA 中当前登记的全部向量模型，以及它们实际的开放状态。')
+      );
+      return;
+    }
+    var models = filteredModels();
+    if (models.length === 0) {
+      dom.empty.hidden = false;
+      if (state.snapshot.models.length === 0) {
+        dom.empty.replaceChildren(
+          el('b', null, '当前没有登记任何向量模型'),
+          document.createTextNode('请先在 CPA 配置中添加上游渠道与模型，再回到这里逐条开放。')
+        );
+      } else {
+        dom.empty.replaceChildren(
+          el('b', null, '没有符合条件的模型'),
+          document.createTextNode(state.onlyOpen ? '当前筛选下没有已开放的模型，可关闭「只看已开放」再查看。' : '换一个渠道或关键词再试。')
+        );
+      }
+      return;
+    }
+    dom.empty.hidden = true;
+    var frag = document.createDocumentFragment();
+    models.forEach(function (model, i) { frag.appendChild(buildRow(model, i + 1)); });
+    dom.rows.appendChild(frag);
+    if (state.focusKey && state.rowRefs.has(state.focusKey)) {
+      var target = state.rowRefs.get(state.focusKey);
+      if (target) target.select.focus({ preventScroll: true });
+      state.focusKey = null;
+    }
+  }
+
+  function buildRow(model, ordinal) {
+    var k = keyOf(model);
+    var draft = state.drafts.has(k) ? state.drafts.get(k) : model.mode;
+    var row = el('div', 'row');
+    row.setAttribute('role', 'row');
+
+    // 模型
+    var modelCell = el('div', 'cell model');
+    modelCell.setAttribute('role', 'cell');
+    modelCell.dataset.label = '模型';
+    var ord = el('span', 'ord', (ordinal < 10 ? '0' : '') + ordinal);
+    ord.setAttribute('aria-hidden', 'true');
+    var stack = el('span', 'model-stack');
+    stack.appendChild(el('span', 'model-name', model.name));
+    if (model.alias) stack.appendChild(el('span', 'model-alias', '别名 ' + model.alias));
+    modelCell.appendChild(ord);
+    modelCell.appendChild(stack);
+    row.appendChild(modelCell);
+
+    // 渠道
+    var chCell = el('div', 'cell');
+    chCell.setAttribute('role', 'cell');
+    chCell.dataset.label = '渠道';
+    var chip = el('span', 'chip', model.channel);
+    chip.title = model.channel;
+    chCell.appendChild(chip);
+    row.appendChild(chCell);
+
+    // 协议
+    var protoCell = el('div', 'cell proto');
+    protoCell.setAttribute('role', 'cell');
+    protoCell.dataset.label = '协议';
+    protoCell.textContent = PROTO_LABEL[model.protocol] || model.protocol;
+    protoCell.title = model.protocol;
+    row.appendChild(protoCell);
+
+    // 自动识别
+    var autoCell = el('div', 'cell');
+    autoCell.setAttribute('role', 'cell');
+    autoCell.dataset.label = '自动识别';
+    var autoBadge = el('span', 'badge ' + (model.automatic ? 'auto' : 'unknown'), model.automatic ? '常见模型' : '未识别');
+    autoBadge.title = model.automatic ? '平台按常见模型自动识别，模式为「自动」时默认对外开放' : '平台未自动识别，模式为「自动」时不会开放';
+    autoCell.appendChild(autoBadge);
+    row.appendChild(autoCell);
+
+    // 最终可用
+    var enabledCell = el('div', 'cell');
+    enabledCell.setAttribute('role', 'cell');
+    enabledCell.dataset.label = '最终可用';
+    var pill = el('span', 'pill ' + (model.enabled ? 'on' : 'off'), model.enabled ? '对外可用' : '不对外');
+    pill.title = '服务端当前计算的最终状态';
+    enabledCell.appendChild(pill);
+    row.appendChild(enabledCell);
+
+    // 开放方式
+    var modeCell = el('div', 'cell mode-cell');
+    modeCell.setAttribute('role', 'cell');
+    modeCell.dataset.label = '开放方式';
+    var wrap = el('span', 'select-wrap');
+    var select = document.createElement('select');
+    select.setAttribute('aria-label', '模型 ' + model.name + ' 的开放方式');
+    MODE_VALUES.forEach(function (mode) {
+      var opt = el('option', null, modeOptionLabel(mode, model.automatic));
+      opt.value = mode;
+      select.appendChild(opt);
+    });
+    select.value = draft;
+    wrap.appendChild(select);
+    var preview = el('span', 'preview');
+    preview.setAttribute('aria-live', 'polite');
+    modeCell.appendChild(wrap);
+    modeCell.appendChild(preview);
+    row.appendChild(modeCell);
+
+    // 操作
+    var actionCell = el('div', 'cell actions');
+    actionCell.setAttribute('role', 'cell');
+    actionCell.dataset.label = '操作';
+    var saveBtn = el('button', 'primary', '保存');
+    saveBtn.type = 'button';
+    var status = el('span', 'row-status');
+    status.setAttribute('role', 'status');
+    actionCell.appendChild(saveBtn);
+    actionCell.appendChild(status);
+    row.appendChild(actionCell);
+
+    var refs = {
+      row: row, select: select, preview: preview, save: saveBtn, status: status, model: model
+    };
+    state.rowRefs.set(k, refs);
+
+    select.addEventListener('change', function () {
+      var next = select.value;
+      if (next === model.mode) state.drafts.delete(k);
+      else state.drafts.set(k, next);
+      state.notes.delete(k);
+      updateRow(k);
+      renderSummary();
+    });
+    saveBtn.addEventListener('click', function () { saveRow(model); });
+
+    if (state.flashKey === k) {
+      row.dataset.flash = 'true';
+      state.flashKey = null;
+    }
+    updateRow(k);
+    return row;
+  }
+
+  function updateRow(k) {
+    var refs = state.rowRefs.get(k);
+    if (!refs) return;
+    var model = refs.model;
+    var draft = state.drafts.has(k) ? state.drafts.get(k) : model.mode;
+    var dirty = draft !== model.mode;
+    var saving = state.saving.has(k);
+    var locked = saving || state.loading;
+
+    refs.row.dataset.dirty = dirty ? 'true' : 'false';
+    refs.row.dataset.saving = saving ? 'true' : 'false';
+    if (refs.select.value !== draft) refs.select.value = draft;
+    refs.select.disabled = locked;
+    refs.save.disabled = !dirty || locked;
+    refs.save.textContent = saving ? '保存中' : '保存';
+    refs.save.title = dirty ? '保存这一条修改' : '没有未保存的修改';
+
+    var note = state.notes.get(k);
+    if (dirty) {
+      refs.preview.hidden = false;
+      refs.preview.textContent = '保存后：' + (effective(draft, model.automatic) ? '对外可用' : '不对外');
+    } else {
+      refs.preview.hidden = true;
+      refs.preview.textContent = '';
+    }
+    if (note) {
+      refs.status.textContent = note.text;
+      refs.status.dataset.kind = note.kind || '';
+    } else if (saving) {
+      refs.status.textContent = '正在提交…';
+      refs.status.dataset.kind = '';
+    } else if (state.loading && dirty) {
+      refs.status.textContent = '读取中，暂不可保存';
+      refs.status.dataset.kind = '';
+    } else {
+      refs.status.textContent = '';
+      refs.status.dataset.kind = '';
+    }
+  }
+
+  /* ---------- 连接 / 断开 ---------- */
+  function disconnect(message) {
+    var wasConnected = !!state.key;
+    state.key = null;
+    state.epoch++;
+    state.snapshot = null;
+    state.revision = null;
+    state.loadedAt = null;
+    state.drafts.clear();
+    state.notes.clear();
+    state.saving.clear();
+    state.postTokens.clear();
+    state.loadToken++;
+    if (state.abort) { try { state.abort.abort(); } catch (e) { /* 已结束 */ } }
+    state.abort = null;
+    state.loading = false;
+    dom.board.setAttribute('aria-busy', 'false');
+    dom.adminKey.value = '';
+    dom.gateError.textContent = message || '';
+    setNotice(null);
+    render();
+    if (message) {
+      dom.adminKey.focus();
+      showToast('已退出：' + message, 'error');
+    } else if (wasConnected) {
+      showToast('已退出，管理密钥已从内存清除。', 'ok');
+    }
+  }
+
+  dom.gateForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    if (state.loading) return;
+    var key = dom.adminKey.value.trim();
+    if (!key) {
+      dom.gateError.textContent = '请先填写 CPA 管理密钥。';
+      dom.adminKey.focus();
+      return;
+    }
+    dom.adminKey.value = '';
+    dom.gateError.textContent = '';
+    dom.connectBtn.disabled = true;
+    state.key = key;
+    state.epoch++;
+    state.snapshot = null;
+    state.revision = null;
+    state.loadedAt = null;
+    state.drafts.clear();
+    state.notes.clear();
+    state.channel = 'all';
+    state.query = '';
+    state.onlyOpen = false;
+    dom.search.value = '';
+    dom.onlyOpen.checked = false;
+    setNotice(null);
+    render();
+    load('connect').then(function () {
+      dom.connectBtn.disabled = false;
+      if (!state.key) return; // 鉴权失败时已退回密钥门
+      if (state.snapshot) dom.search.focus({ preventScroll: true });
+    });
+  });
+
+  dom.logoutBtn.addEventListener('click', function () { disconnect(null); });
+
+  /* ---------- 过滤交互 ---------- */
+  dom.channelFilter.addEventListener('change', function () {
+    state.channel = dom.channelFilter.value;
+    renderSummary();
+    renderTable();
+  });
+  dom.search.addEventListener('input', function () {
+    state.query = dom.search.value;
+    renderSummary();
+    renderTable();
+  });
+  dom.onlyOpen.addEventListener('change', function () {
+    state.onlyOpen = dom.onlyOpen.checked;
+    renderSummary();
+    renderTable();
+  });
+  dom.refreshBtn.addEventListener('click', function () { load('refresh'); });
+
+  /* ---------- 启动 ---------- */
+  render();
+})();
+</script>
+</body>
+</html>

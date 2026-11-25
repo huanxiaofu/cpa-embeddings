@@ -7,12 +7,12 @@ import (
 
 func TestEdgeCatalog(t *testing.T) {
 	const creds = "[{api-key: synthetic-fixture}]"
-	cfg := compatCfg(compatGroupYAML("embedder-embeddings", "https://provider.example/v1", "", "[{name: vendor-name, alias: my-vector}]", creds), compatGroupYAML("cohere-embeddings", "https://api.cohere.com/v2", "", "[{name: embed-v4.0, alias: co-doc}]", creds), compatGroupYAML("ordinary-chat", "https://chat.example/v1", "", "[{name: chat-only}]", creds))
+	cfg := compatCfg(compatGroupYAML("embedder-embeddings", "https://provider.example/v1", "", "[{name: bge-m3, alias: my-vector}]", creds), compatGroupYAML("cohere-embeddings", "https://api.cohere.com/v2", "", "[{name: embed-v4.0, alias: co-doc}]", creds), compatGroupYAML("ordinary-chat", "https://chat.example/v1", "", "[{name: chat-only}]", creds))
 	edge, e := renderEdge([]byte(cfg), "cpa:8317")
-	if e != nil || !strings.Contains(edge, `["my-vector"]=true`) || !strings.Contains(edge, `["co-doc"]=true`) || !strings.Contains(edge, "http://cpa:8317/v1/responses") {
+	if e != nil || !strings.Contains(edge, "eligible-v3") || !strings.Contains(edge, "internal;") || !strings.Contains(edge, "http://cpa:8317/v1/responses") {
 		t.Fatal("catalog render")
 	}
-	for _, n := range []string{"vendor-name", "synthetic-fixture", "chat-only", "provider.example", "CPA_EMBED_MODELS"} {
+	for _, n := range []string{"bge-m3", "synthetic-fixture", "chat-only", "provider.example", "CPA_EMBED_MODELS"} {
 		if strings.Contains(edge, n) {
 			t.Fatal("unexpected entry", n)
 		}
@@ -43,7 +43,7 @@ func TestExistingGroupWithoutRename(t *testing.T) {
 		t.Fatal(e)
 	}
 	out, e := renderEdge([]byte(s), "localhost:8317")
-	if e != nil || !strings.Contains(out, compatTestModel) {
+	if e != nil || strings.Contains(out, compatTestModel) {
 		t.Fatal("missing opt-in")
 	}
 }

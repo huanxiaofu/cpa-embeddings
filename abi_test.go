@@ -66,7 +66,7 @@ func TestABIRegistration(t *testing.T) {
 			Capabilities map[string]any
 			Metadata     struct{ Name string }
 		}
-		want := map[string]any{"model_router": true, "executor": true, "executor_model_scope": "static", "executor_input_formats": []any{"openai-response"}, "executor_output_formats": []any{"openai-response"}}
+		want := map[string]any{"management_api": true, "model_router": true, "executor": true, "executor_model_scope": "static", "executor_input_formats": []any{"openai-response"}, "executor_output_formats": []any{"openai-response"}}
 		if !env.OK || json.Unmarshal(got, &reg) != nil || reg.Metadata.Name != abiPluginID || !reflect.DeepEqual(reg.Capabilities, want) {
 			t.Fatal(method, string(got))
 		}

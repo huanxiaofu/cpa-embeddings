@@ -21,29 +21,19 @@ print(len(r.data), len(r.data[0].embedding), r.usage.prompt_tokens)
 2. 插件处理带内部标记的非流式请求，未登记型号不回落到聊天。客户端只能传模型名，不能指定上游地址、认证或自定义请求头。
 3. **原生用量**：OpenAI 兼容响应必须提供 `usage.prompt_tokens` 和 `usage.total_tokens`；Gemini 使用 `usageMetadata.promptTokenCount`，缺失时请求同模型 `countTokens`；Cohere 使用 `meta.billed_units.input_tokens`。缺少有效计数不返回成功，不按字数估算。CPA 记录的是客户端 Key 与请求模型（配置了别名时即别名）。内部 endpoint 可能显示 `/v1/responses`。
 
-## 接入新上游
+## 自动识别和管理面板
 
-| 上游协议 | CPA 配置位置 | 示例 | 是否实测真实上游 |
-|---|---|---|---|
-| OpenAI 兼容 `POST {base-url}/embeddings` | `api-keys.openai-compatibility`，组名以 `-embeddings` 结尾 | OpenAI、硅基流动、阿里云百炼兼容模式、Mistral、自建 HTTPS 网关 | 硅基流动已实测；其他按协议和合成测试验证 |
-| Gemini 原生 `embedContent` / `batchEmbedContents` | `api-keys.gemini`，官方 base，显式填写原生 `gemini-embedding-*` / `text-embedding-*` 型号 | Gemini Embedding | 已实测 |
-| [Cohere v2 Embed](https://docs.cohere.com/reference/embed) | 同一兼容渠道配置区，组名为 `cohere-embeddings` 或以 `-cohere-embeddings` 结尾，base 为 `https://api.cohere.com/v2` | `embed-v4.0` | 原生请求与回执已做合成测试，未用真实账号调用 |
+**一个 CPA 渠道可以同时登记聊天、向量与重排模型。** 不需要改渠道名、拆渠道、为 Embeddings 再填一遍 Key，也不需要增删型号时重新生成 OpenResty 配置。
 
-示例：在**已有** `api-keys.openai-compatibility` 列表追加一项；凭据只在 CPA 服务端注入，不要提交真实配置。普通聊天组不要改名。
+OpenAI 兼容渠道先看模型的 `output-modalities`；没有明确声明时，按真实 `name` 识别常见向量模型族，例如 `text-embedding-3-small`、`text-embedding-3-large`、`text-embedding-ada-002`、Qwen Embedding、BGE、Mistral Embed、Jina Embeddings 等。`alias` 只用于客户端调用，不能把聊天模型伪装为向量模型。模型名不是标准能力标记，不认识的型号默认不开。自动识别不代表上游账号有额度。
 
-```yaml
-- name: openai-embeddings
-  base-url: https://api.openai.com/v1
-  keys:
-    - api-key: "<服务端上游凭据>"
-  models:
-    - name: text-embedding-3-small   # 发给上游的真实名称
-      alias: kb-openai              # 客户端及面板使用的名称，可省略
-```
+需要覆盖自动识别时：
 
-已有渠道不需要为后缀改名：可在 `plugins.configs.cpr-gemini-embeddings.upstream-protocols` 中登记 `已有组名: openai` 或 `已有组名: cohere`。该组应只列出要开放的向量模型，聊天、重排另放普通组。
+1. 管理员打开网关的 **`/embedding-models/`**，用 **CPA 管理密钥**连接。普通应用仍然只使用客户端 Key。面板只列兼容渠道的模型、别名和选择结果，不返回上游地址或密钥。
+2. 选渠道或搜索真实名/别名，将需要的**单个模型**设为「开放」「关闭」或「自动」，再点该行的「保存」。默认「自动」，不用逐条选择。修改不会影响原有聊天路由；不能因人工开放而跳过凭据、唯一绑定、真实用量等校验。
+3. 保存后下一次向量请求即按新规则处理。人工设置以**渠道名 + 真实模型名**存放在配置同目录 `cpa-embeddings-state/overrides.json`，备份时一并保存。「自动」恢复自动识别（也会覆盖同项旧 YAML 预设）。
 
-例如换为百炼时可另建 `dashscope-embeddings`，填写服务地区对应的 `.../compatible-mode/v1` 地址及真实模型名。每个客户可见的模型名须唯一；同组可登记多个向量模型，不同组可以并存。每个模型目前要求唯一可用凭据，不实现多 Key 轮询。兼容组仅支持 HTTPS Bearer，无重定向；配置了尚不支持的代理、前缀、额外请求头或排除规则时不静默直连。协议不同（如 AWS SigV4）或不提供真实用量的服务不等于已支持。Cohere 可用 `input_type: search_document`（默认）建库，查询时用 `search_query`。
+协议：`api-keys.openai-compatibility` 默认走 HTTPS Bearer 的 `POST {base-url}/embeddings`，可接 OpenAI、硅基流动、百炼兼容模式、Mistral 等；同模型要求唯一可用绑定，不会在不支持的代理或凭据策略下静默直连。Cohere v2 原生用 `https://api.cohere.com/v2`，任意组名可通过 `plugins.configs.cpr-gemini-embeddings.upstream-protocols` 指定 `渠道名: cohere`，该字段只决定协议、不会开放整组。原生 Gemini 仍从 `api-keys.gemini` 读取显式配置的 Google 向量模型。与协议不兼容或不返回真实用量的服务不等同于已支持。
 
 CPA 的 `observability.usage.usage-statistics-enabled` 必须为 `true`，并确认运行实例已经加载，oh-my-cpa 也在消费该实例的用量队列。开关关闭时，客户端仍可能收到 `usage`，但后台不入账；已经丢弃的历史请求不会自动补回。
 
@@ -65,13 +55,14 @@ sha256sum dist/cpr-gemini-embeddings.so
 - 部署前备份 CPA 配置与站点配置。将 `.so` 放入 CPA 对应 OS/架构插件目录，在**已有** `plugins.configs` 下添加 `cpr-gemini-embeddings: {enabled: true}`。不要复制一个新的顶层 `plugins` 段。
 - 按上文配置上游，确保 CPA 已加载配置；插件读取运行目录 `config.yaml`，可通过 `CPR_EMBED_CONFIG` 指定。
 - 若 Gemini 渠道配置的 Docker 代理主机名在 CPA 宿主不可解析，可在配置文件同目录创建 `cpr-embeddings.local.yaml`，用 `proxy_aliases` 映射到**同一出口**的宿主监听地址；不要让请求静默改走直连。
-- 使用配套 `cpa-embeddings-config` 工具（或源码 `go run .`）生成现有 HTTPS 站点使用的 location。**每次增删公开模型**时重新生成该片段，diff 确认后替换旧片段，`nginx -t` 并平滑 reload；不用手抄型号、改 Go 代码或重新发布插件。普通 `/v1/` 保留 `proxy_set_header X-Cpr-Operation "";`。不要把未渲染的模板直接装到生产。
+- 在 CPA 配置目录内创建私有 `cpa-embeddings-state/` 目录（`0700`，归服务运行账户所有）。不要把包含上游 Key 的配置文件暴露给网页或 OpenResty。
+- 首次安装/从 v0.2 升级时，使用匹配版本的工具生成站点片段，替换旧的向量 location，执行 `nginx -t` 后平滑 reload。此后添加渠道、增删模型、在面板保存都**不需要**再渲染或重载站点。
 
   ```sh
   cpa-embeddings-config render-edge /path/to/config.yaml cpa:8317 > embeddings.location.new
   ```
 
-  工具只输出公开模型别名和网关 location，不输出上游密钥。原生插件 ID 与旧版本一致，升级不用改客户端或重建用量分组；热升级可使用 `cpr-gemini-embeddings-v0.2.0.so` 作为 CPA 版本化文件名。
+  仅部署在 HTTPS 管理员可信来源。模板只代理一个有 CPA 管理鉴权的模型选择 API 和不含数据的页面，不要另行暴露通用管理路径。普通 `/v1/` 规则须清除 `X-Cpr-Operation`。精确 `/v1/embeddings` 用内部子请求查询正在运行的插件，未就绪时拒绝请求而不回落到聊天。原生插件 ID 保持不变；版本化库文件名为 `cpr-gemini-embeddings-v0.3.0.so`。
 - 验收：错误 Key 应返回 401；有效 Key 对两类上游均返回数值向量和正的 Token 数。在 CPA/oh-my-cpa 后台核对该 Key、模型、请求次数、输入和总 Token；再确认普通聊天仍正常。回退时先移除公开向量入口，再停用插件，恢复配置与原有路由。
 
 代码不包含实际 API Key、服务器地址、管理凭据或生产配置。部署清单与私有配置勿提交至 Git。

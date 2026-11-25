@@ -18,9 +18,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// OpenAI-compatible 上游只从 CPA api-keys.openai-compatibility 的显式专用组读取：
-// 组名必须以 -embeddings 结尾，避免把聊天、重排等渠道误当成向量上游。
-const compatSuffix = "-embeddings"
+// 组名不再授权整组：任何组都按模型真实名称与显式输出模态逐个裁决（见
+// recognition.go）。组名只用于协议选择，Cohere 的官方/明确原生命名仍认
+// cohere-embeddings，其余默认 OpenAI 兼容协议。
+const cohereGroupSuffix = "-cohere-embeddings"
 const compatLimit = 8 << 20
 
 var (
@@ -32,10 +33,11 @@ var (
 // compatTarget 是唯一确定的一次上游调用绑定：向上游发送的真实模型名、实际 HTTPS base
 // 和单条凭据。客户端看到的模型名（alias 或 name）只用于匹配和回写响应。
 type compatTarget struct {
-	Name   string
-	Base   string
-	Key    string
-	Cohere bool
+	Name    string
+	Base    string
+	Key     string
+	Channel string
+	Cohere  bool
 }
 
 func compatConfigPath() string {
@@ -80,18 +82,27 @@ func compatBinding(model string) (compatTarget, error) {
 	if err != nil {
 		return compatTarget{}, errCompatBinding
 	}
-	return compatBindingFrom(raw, model)
+	cfg, err := parseCatalog(raw)
+	if err != nil {
+		return compatTarget{}, errCompatBinding
+	}
+	return compatBindingFromConfig(cfg, model)
 }
 
-// 已有渠道无须改名：插件实例可显式写入组名到协议的映射。
+// 已有渠道无须改名：插件实例可显式写入组名到协议的映射，并可按渠道给单个
+// 真实模型写下人工 allow/deny 规则。
 type channelOptions struct {
 	Plugins struct {
-		Configs map[string]struct {
-			Protocols map[string]string `yaml:"upstream-protocols"`
-		} `yaml:"configs"`
+		Configs map[string]pluginSettings `yaml:"configs"`
 	} `yaml:"plugins"`
 }
+type pluginSettings struct {
+	Protocols      map[string]string            `yaml:"upstream-protocols"`
+	ModelOverrides map[string]map[string]string `yaml:"model-overrides"`
+}
 
+// protocol 解析组协议：显式合法映射优先，其次 Cohere 官方命名，其余默认 OpenAI。
+// 显式写成其他值的映射返回空串，表示配置无法忠实执行，由调用方跳过该组。
 func (c channelOptions) protocol(name string) string {
 	if v, ok := c.Plugins.Configs[abiPluginID].Protocols[name]; ok {
 		if v == "openai" || v == "cohere" {
@@ -99,54 +110,91 @@ func (c channelOptions) protocol(name string) string {
 		}
 		return ""
 	}
-	if name == "cohere-embeddings" || strings.HasSuffix(name, "-cohere-embeddings") {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == strings.TrimPrefix(cohereGroupSuffix, "-") || strings.HasSuffix(n, cohereGroupSuffix) {
 		return "cohere"
 	}
-	if len(name) > len(compatSuffix) && strings.HasSuffix(name, compatSuffix) {
-		return "openai"
-	}
-	return ""
+	return "openai"
 }
-func compatBindingFrom(raw []byte, model string) (compatTarget, error) {
-	var cfg struct {
-		channelOptions `yaml:",inline"`
-		Requests       struct {
-			Proxy string `yaml:"proxy-url"`
-		} `yaml:"requests"`
+
+// catalogConfig 是一次性解析出的 CPA 配置快照：插件实例配置（协议映射与模型
+// 人工规则）+ api-keys 的 Gemini 与 OpenAI 兼容组。edge/dispatch/管理面板可复用
+// 同一份快照，避免重复读盘与重复解码。
+type catalogConfig struct {
+	channelOptions `yaml:",inline"`
+	Requests       struct {
 		Proxy string `yaml:"proxy-url"`
-		API   struct {
-			Groups []groupBinding `yaml:"openai-compatibility"`
-		} `yaml:"api-keys"`
-	}
+	} `yaml:"requests"`
+	Proxy string `yaml:"proxy-url"`
+	API   struct {
+		Gemini []groupBinding `yaml:"gemini"`
+		Compat []groupBinding `yaml:"openai-compatibility"`
+	} `yaml:"api-keys"`
+}
+
+// parseCatalog 只解码一次 YAML。多文档配置无法判定以哪份为准，直接拒绝。
+func parseCatalog(raw []byte) (*catalogConfig, error) {
+	cfg := new(catalogConfig)
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
-	// 无法忠实执行的全局代理策略或多文档配置一律拒绝，不退回直连。
-	if dec.Decode(&cfg) != nil || cfg.Proxy != "" || cfg.Requests.Proxy != "" || dec.Decode(new(yaml.Node)) != io.EOF {
+	if err := dec.Decode(cfg); err != nil {
+		return nil, errors.New("invalid CPA configuration")
+	}
+	if err := dec.Decode(new(yaml.Node)); err != io.EOF {
+		return nil, errors.New("invalid CPA configuration")
+	}
+	return cfg, nil
+}
+
+// compatBindingFrom 读一次 YAML 完成绑定，语义与 compatBindingFromConfig 相同。
+func compatBindingFrom(raw []byte, model string) (compatTarget, error) {
+	cfg, err := parseCatalog(raw)
+	if err != nil {
+		return compatTarget{}, errCompatBinding
+	}
+	return compatBindingFromConfig(cfg, model)
+}
+
+// compatBindingFromConfig 是模型绑定的单一实现：先按 modelDecision 逐个裁决模型
+// （真实名称 + 显式模态 + 人工规则），再在命中的组里确定唯一可用凭据。既有安全约束
+// 不变：无法忠实执行的前缀/代理/附加头/排除规则、非 HTTPS 地址、同名歧义与多个
+// 可用凭据都拒绝，人工 allow 不越过这些限制。
+func compatBindingFromConfig(cfg *catalogConfig, model string) (compatTarget, error) {
+	if cfg == nil || model == "" || cfg.Proxy != "" || cfg.Requests.Proxy != "" {
 		return compatTarget{}, errCompatBinding
 	}
 	var found []compatTarget
-	for _, g := range cfg.API.Groups {
+	for _, g := range cfg.API.Compat {
 		kind := cfg.protocol(g.Name)
 		if kind == "" {
 			continue
 		}
-		// 客户端名优先取 alias；未设置 alias 时直接使用真实 name。
-		var real []string
+		// 停用的组不再提供任何模型。
+		if !compatUsable(g.keyBinding) {
+			continue
+		}
+		// 客户端名优先取 alias；未设置 alias 时直接使用真实 name。alias 只决定
+		// 寻址名，模型是不是向量模型仍由真实 name 与显式模态裁决。
+		var matched []modelBinding
 		for _, m := range g.Models {
 			if m.Name == "" {
 				continue
 			}
 			if m.Alias != "" && m.Alias == model || m.Alias == "" && m.Name == model {
-				real = append(real, m.Name)
+				matched = append(matched, m)
 			}
 		}
-		if len(real) == 0 {
+		if len(matched) == 0 {
 			continue
 		}
-		// 停用的组不再提供该模型；其余情况必须能唯一解析，避免挑错渠道。
-		if !compatUsable(g.keyBinding) {
+		// 组内同名歧义无法判定，直接拒绝；未识别或被人工 deny 的模型只是不从这条
+		// 渠道提供，不影响其他组。
+		if len(matched) != 1 {
+			return compatTarget{}, errCompatBinding
+		}
+		if _, _, enabled := cfg.modelDecision(g, matched[0]); !enabled {
 			continue
 		}
-		if len(real) != 1 || compatUnsupported(g.keyBinding) {
+		if compatUnsupported(g.keyBinding) {
 			return compatTarget{}, errCompatBinding
 		}
 		keys := make([]keyBinding, 0, len(g.Keys)+1)
@@ -175,7 +223,7 @@ func compatBindingFrom(raw []byte, model string) (compatTarget, error) {
 			if k.Key == "" || !compatUsable(k) || compatUnsupported(k) {
 				continue
 			}
-			found = append(found, compatTarget{Name: real[0], Base: base, Key: k.Key, Cohere: kind == "cohere"})
+			found = append(found, compatTarget{Channel: g.Name, Name: matched[0].Name, Base: base, Key: k.Key, Cohere: kind == "cohere"})
 		}
 	}
 	if len(found) != 1 {
@@ -184,7 +232,8 @@ func compatBindingFrom(raw []byte, model string) (compatTarget, error) {
 	return found[0], nil
 }
 
-// compatAllowed 是共享入口：客户端模型名（alias 或 name）是否登记在显式专用向量组。
+// compatAllowed 是共享入口：客户端模型名（alias 或 name）是否能在某个组里按识别
+// 规则与人工规则解析出唯一可用绑定。
 func compatAllowed(model string) bool {
 	_, err := compatBinding(model)
 	return err == nil
