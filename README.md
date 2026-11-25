@@ -21,6 +21,8 @@ print(len(r.data), len(r.data[0].embedding), r.usage.prompt_tokens)
 2. `.so` 通过 CPA 8.1.0 的 ModelRouter/Executor ABI 处理带标记的非流式请求。Gemini 使用 `embedContent` 或 `batchEmbedContents`；SiliconFlow 使用其固定 HTTPS `/v1/embeddings`。两者均只从当前 CPA 配置读取显式启用、模型匹配的上游凭据，当前版本要求单个可用凭据，不实现多 Key 调度。
 3. Gemini 优先读取 Google 的 `usageMetadata.promptTokenCount`，缺失时请求同模型的 `countTokens`。SiliconFlow 读取响应里的 `usage`。无法获得有效计数则不返回成功，不使用字符数估算。原生宿主从成功响应解析输入和总 Token，再按鉴权后的客户端身份记账。由于内部沿用了 Responses，后台的 endpoint 可能显示 `/v1/responses`；用量按 Key 和实际模型分组。
 
+CPA 的 `observability.usage.usage-statistics-enabled` 必须为 `true`，并确认运行实例已经加载，oh-my-cpa 也在消费该实例的用量队列。开关关闭时，客户端仍可能收到 `usage`，但后台不入账；已经丢弃的历史请求不会自动补回。
+
 统计 Token 不等于定价或扣费。金额取决于面板的价格设置；本插件不设置单价，也不另建额度或计费系统。
 
 ## 构建和部署
